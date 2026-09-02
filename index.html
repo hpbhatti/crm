@@ -728,6 +728,7 @@ if(!D.warArchive)D.warArchive=[];
 // Initialize from Supabase
 async function initApp(){
   const mc=document.getElementById('mc');
+  if(!mc){setTimeout(initApp,100);return;}
   mc.innerHTML='<div style="padding:60px 40px;text-align:center"><div style="width:40px;height:40px;border:3px solid var(--gold);border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 16px"></div><div style="font-size:14px;color:var(--ink2);font-weight:500">Connecting to RevOps database...</div><div style="font-size:11px;color:var(--ink3);margin-top:6px">First load may take a few seconds</div></div>';
   try{
     const ok=await sbLoad();
@@ -746,7 +747,12 @@ async function initApp(){
 // Add spin animation to CSS (inline)
 document.head.insertAdjacentHTML('beforeend','<style>@keyframes spin{to{transform:rotate(360deg)}}</style>');
 
-initApp();
+// Run after DOM is ready
+if(document.readyState==='loading'){
+  document.addEventListener('DOMContentLoaded',initApp);
+} else {
+  initApp();
+}
 
 // Stage days calculated automatically
 function stageDays(d){return Math.max(0,dd(d.stageEnteredDate||d.created||today,today))}
