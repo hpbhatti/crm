@@ -392,6 +392,10 @@ async function sbLoad(){
     });
 
     // Assemble targets
+    // AI cache as key-value map (built early since assembledTargets needs it)
+    const cacheMap={};
+    (aiCache||[]).forEach(c=>{cacheMap[c.cache_key]={text:c.response_text,date:c.cached_date,_id:c.id}});
+
     const assembledTargets=(targets||[]).map(t=>{
       const tLogs=(targetLogs||[]).filter(l=>l.target_id===t.id).map(l=>({
         _id:l.id,date:l.log_date,note:l.note
@@ -410,14 +414,12 @@ async function sbLoad(){
         nextStep:t.next_step||'',nextDate:t.next_date||'',
         parkReason:t.park_reason||'',icpMatch:t.icp_match||'unknown',
         icpMatchReason:t.icp_match_reason||'',
-        created:t.created||'',researchLog:tLogs,aiArchive:tAiArch
+        created:t.created||'',researchLog:tLogs,aiArchive:tAiArch,
+        aiCache:(cacheMap['tgt-'+t.id]||{})
       };
     });
 
     // AI cache as key-value map
-    const cacheMap={};
-    (aiCache||[]).forEach(c=>{cacheMap[c.cache_key]={text:c.response_text,date:c.cached_date,_id:c.id}});
-
     // Report comments as map
     const rcMap={};
     (reportComments||[]).forEach(c=>{
@@ -483,10 +485,15 @@ async function sbSaveSettings(){
 }
 
 async function sbSaveDeal(deal){
-  const pp=(D.partners||[]).indexOf(deal.partner)>=0?
-    await sb.from('product_partners').select('id').eq('name',deal.partner).single():null;
-  const rp=deal.referralPartner?
-    await sb.from('referral_partners').select('id').eq('name',deal.referralPartner).single():null;
+  let ppId=null,rpId=null;
+  if(deal.isPartnerDeal&&deal.partner){
+    const {data}=await sb.from('product_partners').select('id').eq('name',deal.partner).maybeSingle();
+    ppId=data?.id||null;
+  }
+  if(deal.referralPartner){
+    const {data}=await sb.from('referral_partners').select('id').eq('name',deal.referralPartner).maybeSingle();
+    rpId=data?.id||null;
+  }
 
   const row={
     company:deal.co,contact_name:deal.contact,contact_title:deal.contactTitle,
@@ -494,11 +501,10 @@ async function sbSaveDeal(deal){
     stage:deal.stage,stage_entered_date:deal.stageEnteredDate,confidence:deal.confidence,
     deal_value:deal.arr,revenue_type:deal.revenueType,
     partner_base_price:deal.partnerBasePrice||0,
-    margin_pct:deal.marginPct||20,
     your_margin:deal.yourMargin||0,
     is_partner_deal:deal.isPartnerDeal,
-    product_partner_id:pp?.data?.id||null,
-    referral_partner_id:rp?.data?.id||null,
+    product_partner_id:ppId,
+    referral_partner_id:rpId,
     referral_fee:deal.referralFee||0,
     product:deal.product,source:deal.src,
     deal_context:deal.dealContext||'',competitive:deal.competitive||'',
@@ -508,12 +514,13 @@ async function sbSaveDeal(deal){
     updated_at:new Date().toISOString()
   };
 
-  if(deal.id&&deal.id.length>10){
-    // Existing deal - update
-    await sb.from('deals').update(row).eq('id',deal.id);
+  const isNew=!deal.id||deal.id.length<10;
+  if(!isNew){
+    const {error}=await sb.from('deals').update(row).eq('id',deal.id);
+    if(error){console.error('sbSaveDeal update error:',error);throw error}
   } else {
-    // New deal - insert
-    const {data}=await sb.from('deals').insert(row).select().single();
+    const {data,error}=await sb.from('deals').insert(row).select().single();
+    if(error){console.error('sbSaveDeal insert error:',error);throw error}
     if(data) deal.id=data.id;
   }
   return deal.id;
@@ -521,14 +528,17 @@ async function sbSaveDeal(deal){
 
 async function sbSaveTask(task){
   const row={
-    title:task.title,deal_id:task.deal||null,due_date:task.due,
-    priority:task.priority,status:task.status,
+    title:task.title,deal_id:task.deal||null,target_id:task.targetId||null,
+    due_date:task.due,priority:task.priority,status:task.status,
     updated_at:new Date().toISOString()
   };
-  if(task.id&&task.id.length>10){
-    await sb.from('tasks').update(row).eq('id',task.id);
+  const isNew=!task.id||task.id.length<10;
+  if(!isNew){
+    const {error}=await sb.from('tasks').update(row).eq('id',task.id);
+    if(error){console.error('sbSaveTask update error:',error);throw error}
   } else {
-    const {data}=await sb.from('tasks').insert(row).select().single();
+    const {data,error}=await sb.from('tasks').insert(row).select().single();
+    if(error){console.error('sbSaveTask insert error:',error);throw error}
     if(data) task.id=data.id;
   }
   return task.id;
@@ -572,6 +582,156 @@ async function sbSaveAiCache(key,text){
 async function sbSaveReportComment(dealId,text,isExec){
   const row={deal_id:isExec?null:dealId,comment_text:text,comment_type:'management',is_executive:isExec||false,updated_at:new Date().toISOString()};
   await sb.from('report_comments').upsert(row,{onConflict:isExec?'is_executive':'deal_id'});
+}
+
+// ── Additional save/delete functions for full persistence ──
+
+async function sbSaveBuyerStep(dealId,step){
+  const row={deal_id:dealId,step_text:step.step,status:step.status||'unknown',sort_order:step._order||0};
+  if(step._id){
+    const {error}=await sb.from('buyer_process_steps').update(row).eq('id',step._id);
+    if(error)throw error;
+  } else {
+    const {data,error}=await sb.from('buyer_process_steps').insert(row).select().single();
+    if(error)throw error;
+    if(data)step._id=data.id;
+  }
+}
+
+async function sbSaveReference(dealId,ref){
+  const row={deal_id:dealId,title:ref.label,url:ref.url,ref_type:ref.type||'Document',added_date:ref.date||today};
+  const {data,error}=await sb.from('deal_references').insert(row).select().single();
+  if(error)throw error;
+  if(data)ref._id=data.id;
+}
+
+async function sbDeleteReference(refId){
+  const {error}=await sb.from('deal_references').delete().eq('id',refId);
+  if(error)throw error;
+}
+
+async function sbDeleteDeal(dealId){
+  const {error}=await sb.from('deals').delete().eq('id',dealId);
+  if(error)throw error;
+}
+
+async function sbDeleteTask(taskId){
+  const {error}=await sb.from('tasks').delete().eq('id',taskId);
+  if(error)throw error;
+}
+
+async function sbSaveTaskStatus(taskId,status){
+  const {error}=await sb.from('tasks').update({status,updated_at:new Date().toISOString()}).eq('id',taskId);
+  if(error)throw error;
+}
+
+async function sbSaveTaskExtension(taskId,ext,newDue){
+  await sb.from('task_extensions').insert({task_id:taskId,old_date:ext.oldDate,new_date:ext.newDate,reason:ext.reason,note:ext.note||''});
+  await sb.from('tasks').update({due_date:newDue,updated_at:new Date().toISOString()}).eq('id',taskId);
+}
+
+async function sbSaveLostDeal(deal){
+  const row={
+    company:deal.co,contact_name:deal.contact||'',contact_title:deal.contactTitle||'',
+    contact_phone:deal.contactPhone||'',contact_email:deal.contactEmail||'',
+    product:deal.product||'',deal_value:deal.arr||0,revenue_type:deal.revenueType||'own_product',
+    partner_base_price:deal.partnerBasePrice||0,your_margin:deal.yourMargin||0,
+    referral_fee:deal.referralFee||0,source:deal.src||'',
+    deal_context:deal.dealContext||'',competitive:deal.competitive||'',notes:deal.notes||'',
+    lost_reason:deal.lostReason,lost_competitor:deal.lostCompetitor||'',lost_note:deal.lostNote||'',
+    lost_at_stage:deal.lostAtStage||deal.stage,lost_date:deal.lostDate||today,
+    original_created:deal.created||null,
+    is_partner_deal:deal.isPartnerDeal||false,partner_name:deal.partner||'',
+    referral_partner:deal.referralPartner||''
+  };
+  const {data,error}=await sb.from('lost_deals').insert(row).select().single();
+  if(error)throw error;
+  return data;
+}
+
+async function sbDeleteAllDealChildren(dealId){
+  // Called before deleting a deal or moving to lost_deals
+  await Promise.all([
+    sb.from('stakeholders').delete().eq('deal_id',dealId),
+    sb.from('activities').delete().eq('deal_id',dealId),
+    sb.from('buyer_process_steps').delete().eq('deal_id',dealId),
+    sb.from('deal_references').delete().eq('deal_id',dealId),
+    sb.from('saved_insights').delete().eq('deal_id',dealId),
+    sb.from('objections').delete().eq('deal_id',dealId),
+    sb.from('deal_exit_checks').delete().eq('deal_id',dealId),
+    sb.from('tasks').delete().eq('deal_id',dealId)
+  ]);
+}
+
+async function sbSaveTarget(t){
+  const row={
+    company:t.co,sector:t.sector||'',location:t.location||'',company_size:t.size||'',
+    website:t.website||'',source:t.source||'',status:t.status||'Watching',
+    warmth:t.warmth||'Cold',fit:t.fit||'Maybe',product:t.product||'',
+    use_case:t.useCase||'',angle:t.angle||'',
+    contact_name:t.contactName||'',contact_phone:t.contactPhone||'',contact_title:t.contactTitle||'',
+    referrer_name:t.referrerName||'',
+    route_in_name:t.routeIn?.name||'',route_in_rel:t.routeIn?.relationship||'',
+    route_in_asked:t.routeIn?.asked||false,route_in_result:t.routeIn?.result||'',
+    next_step:t.nextStep||'',next_date:t.nextDate||null,park_reason:t.parkReason||'',
+    icp_match:t.icpMatch||'unknown',icp_match_reason:t.icpMatchReason||'',
+    created:t.created||today,updated_at:new Date().toISOString()
+  };
+  const isNew=!t.id||t.id.length<10;
+  if(!isNew){
+    const {error}=await sb.from('prospect_targets').update(row).eq('id',t.id);
+    if(error)throw error;
+  } else {
+    const {data,error}=await sb.from('prospect_targets').insert(row).select().single();
+    if(error)throw error;
+    if(data)t.id=data.id;
+  }
+  return t.id;
+}
+
+async function sbDeleteTarget(targetId){
+  await sb.from('target_research_logs').delete().eq('target_id',targetId);
+  await sb.from('target_ai_archive').delete().eq('target_id',targetId);
+  const {error}=await sb.from('prospect_targets').delete().eq('id',targetId);
+  if(error)throw error;
+}
+
+async function sbSaveTargetLog(targetId,log){
+  const {data,error}=await sb.from('target_research_logs').insert({target_id:targetId,log_date:log.date,note:log.note}).select().single();
+  if(error)throw error;
+  if(data)log._id=data.id;
+}
+
+async function sbSaveSavedInsight(dealId,insight){
+  const {data,error}=await sb.from('saved_insights').insert({deal_id:dealId,insight_text:insight.text,insight_date:insight.date||today}).select().single();
+  if(error)throw error;
+  if(data)insight._id=data.id;
+}
+
+async function sbSaveWarArchive(entry){
+  const {data,error}=await sb.from('war_archive').insert({analysis_text:entry.text,analysis_date:entry.date||today}).select().single();
+  if(error)throw error;
+  if(data)entry._id=data.id;
+}
+
+async function sbSaveTargetAiArchive(targetId,entry){
+  const {data,error}=await sb.from('target_ai_archive').insert({target_id:targetId,analysis_text:entry.text,analysis_date:entry.date||today}).select().single();
+  if(error)throw error;
+  if(data)entry._id=data.id;
+}
+
+async function sbSaveProductProfile(productName,profile){
+  const row={
+    product_name:productName,tagline:profile.tagline||'',icp:profile.icp||'',
+    target_sectors:profile.target_sectors||[],budget_range:profile.budget_range||'',
+    size_range:profile.size_range||'',pain_indicators:profile.pain_indicators||[],
+    disqualifiers:profile.disqualifiers||[],
+    differentiators:profile.differentiators||[],
+    common_objections:profile.commonObjections||[],
+    competitors:profile.competitors||[],saudi_context:profile.saudiContext||'',
+    updated_at:new Date().toISOString()
+  };
+  await sb.from('product_profiles').upsert(row,{onConflict:'product_name'});
 }
 
 // ═══ BRIDGE: keep save() working for existing code ═══
@@ -983,6 +1143,7 @@ window.callGemini=async function(dealId){
     // Detect truncation
     if(candidate?.finishReason==='MAX_TOKENS') text+='\n\n⚠ **Response was truncated.** Go to Settings → AI Intelligence and try switching to gemini-2.5-pro for longer responses.';
     D.aiCache[dealId]={text,date:today};save();
+    sbSaveAiCache(dealId,text).catch(e=>console.warn('AI cache sync:',e));
     renderAI(dealId,text);
   }catch(err){
     const el2=aiEl(dealId);
@@ -1008,15 +1169,33 @@ function renderAI(dealId,text){
     +'</div>';
 }
 
-window.saveInsight=function(dealId){
+window.delSavedInsight=async function(dealId,idx){
+  if(!confirm('Delete this saved insight?'))return;
+  const d=fd(dealId);if(!d||!d.savedInsights)return;
+  const insight=d.savedInsights[idx];
+  try{
+    if(insight._id)await sb.from('saved_insights').delete().eq('id',insight._id);
+    d.savedInsights.splice(idx,1);save();vDeal(dealId);
+  }catch(err){
+    console.error('delSavedInsight failed:',err);
+    alert('Failed to delete: '+err.message);
+  }
+};
+window.saveInsight=async function(dealId){
   const d=fd(dealId);if(!d)return;
   const cached=D.aiCache[dealId];if(!cached)return;
-  if(!d.savedInsights)d.savedInsights=[];
-  d.savedInsights.unshift({text:cached.text,date:cached.date||today});
-  save();toast('Insight saved to deal');
-  // Re-render to show saved badge
-  const el=document.getElementById('ai-'+dealId);
-  if(el){const btn=el.querySelector('[onclick*="saveInsight"]');if(btn){btn.textContent='✓ Saved';btn.style.color='var(--green)';btn.style.borderColor='var(--green)'}}
+  const insight={text:cached.text,date:cached.date||today};
+  try{
+    await sbSaveSavedInsight(dealId,insight);
+    if(!d.savedInsights)d.savedInsights=[];
+    d.savedInsights.unshift(insight);
+    save();toast('Insight saved to deal');
+    const el=document.getElementById('ai-'+dealId);
+    if(el){const btn=el.querySelector('[onclick*="saveInsight"]');if(btn){btn.textContent='✓ Saved';btn.style.color='var(--green)';btn.style.borderColor='var(--green)'}}
+  }catch(err){
+    console.error('saveInsight failed:',err);
+    alert('Failed to save insight: '+err.message);
+  }
 };
 
 // ═══ NAV ═══
@@ -1242,7 +1421,7 @@ function rWar(ph){
     ${archive.slice(0,5).map((a,i)=>{const uid='wa-'+i;return`<div style="border:1px solid var(--line);border-radius:5px;margin-top:4px;overflow:hidden">
       <div style="padding:6px 10px;display:flex;justify-content:space-between;align-items:center;background:#faf8f3;cursor:pointer;font-size:10px" onclick="var e=document.getElementById('${uid}');e.style.display=e.style.display==='none'?'block':'none'">
         <span style="color:var(--warm);font-weight:600">${a.date}</span>
-        <button class="rb" style="padding:1px 5px;font-size:9px" onclick="event.stopPropagation();D.warArchive.splice(${i},1);save();rv('war')">×</button>
+        <button class="rb" style="padding:1px 5px;font-size:9px" onclick="event.stopPropagation();delWarArchive(${i})">×</button>
       </div>
       <div id="${uid}" style="display:none;padding:10px;font-size:11px;line-height:1.6">${a.text.replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>').replace(/\n/g,'<br>')}</div>
     </div>`}).join('')}</div>`;
@@ -1273,11 +1452,29 @@ function renderWarAI(text){
     <div>${html}</div></div>`;
 }
 
-window.saveWarInsight=function(){
+window.delWarArchive=async function(i){
+  const entry=D.warArchive[i];
+  try{
+    if(entry._id)await sb.from('war_archive').delete().eq('id',entry._id);
+    D.warArchive.splice(i,1);save();rv('war');
+  }catch(err){
+    console.error('delWarArchive failed:',err);
+    alert('Failed to delete: '+err.message);
+  }
+};
+window.saveWarInsight=async function(){
   const c=D.aiCache._war;if(!c){toast('Nothing to save');return}
-  if(!D.warArchive)D.warArchive=[];D.warArchive.unshift({text:c.text,date:c.date||today});
-  if(D.warArchive.length>10)D.warArchive=D.warArchive.slice(0,10);
-  save();toast('Saved to archive');rv('war');
+  const entry={text:c.text,date:c.date||today};
+  try{
+    await sbSaveWarArchive(entry);
+    if(!D.warArchive)D.warArchive=[];
+    D.warArchive.unshift(entry);
+    if(D.warArchive.length>10)D.warArchive=D.warArchive.slice(0,10);
+    save();toast('Saved to archive');rv('war');
+  }catch(err){
+    console.error('saveWarInsight failed:',err);
+    alert('Failed to save to archive: '+err.message);
+  }
 };
 
 window.callWarGemini=async function(){
@@ -1294,6 +1491,7 @@ window.callWarGemini=async function(){
     const data=await resp.json();let text='';(data.candidates?.[0]?.content?.parts||[]).forEach(p=>{if(p.text)text+=p.text});
     if(!text)text='No response.';if(data.candidates?.[0]?.finishReason==='MAX_TOKENS')text+='\n\n⚠ Truncated.';
     D.aiCache._war={text,date:today};save();renderWarAI(text);
+    sbSaveAiCache('_war',text).catch(e=>console.warn('War AI cache sync:',e));
   }catch(err){if(el)el.innerHTML=`<div style="padding:12px;font-size:12px;color:var(--red);border:1px solid rgba(176,69,64,.3);border-radius:6px;background:var(--rbg)"><strong>Error:</strong> ${(err.message||'').slice(0,300)}</div>`}
 };
 
@@ -1362,6 +1560,7 @@ window.callLossAI=async function(){
     if(!resp.ok) throw new Error(await resp.text());
     const data=await resp.json();let text='';(data.candidates?.[0]?.content?.parts||[]).forEach(p=>{if(p.text)text+=p.text});
     D.aiCache._loss={text:text||'No response',date:today};save();
+    sbSaveAiCache('_loss',text||'No response').catch(e=>console.warn('Loss AI cache sync:',e));
     if(el)el.innerHTML=`<div style="border:1px solid var(--gold);border-radius:6px;background:linear-gradient(135deg,#faf8f3,#f5f0e4);border-left:3px solid var(--gold);padding:14px;font-size:12px;line-height:1.7">${text.replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>').replace(/\n/g,'<br>')}</div>`;
   }catch(err){if(el)el.innerHTML=`<div style="color:var(--red);font-size:12px">${(err.message||'').slice(0,200)}</div>`}
 };
@@ -1408,21 +1607,26 @@ window.markLostM=function(id){
   `,`<button class="btn gh" onclick="clM()">Cancel</button><button class="btn dg" onclick="confirmLost('${id}')">Confirm Lost</button>`);
 };
 
-window.confirmLost=function(id){
+window.confirmLost=async function(id){
   const d=fd(id);if(!d)return;
   d.lostReason=$('#ml-r').value;d.lostCompetitor=$('#ml-c').value;d.lostNote=$('#ml-n').value;
   d.lostDate=today;d.lostAtStage=d.stage;
-  if(!D.lostDeals)D.lostDeals=[];D.lostDeals.forEach(ld=>{if(!ld.aiCache)ld.aiCache={};if(!ld.aiArchive)ld.aiArchive=[]});
 
-  if(!D.prospectTargets)D.prospectTargets=[];
-  if(!D.tgtAiCache)D.tgtAiCache={};
-  if(!D.tgtAiArchive)D.tgtAiArchive=[];
-  D.prospectTargets.forEach(t=>{if(!t.researchLog)t.researchLog=[];if(!t.routeIn)t.routeIn={name:'',relationship:'',asked:false,result:''};if(!t.aiCache)t.aiCache={};if(!t.aiArchive)t.aiArchive=[];if(!t.contactName)t.contactName='';if(!t.contactPhone)t.contactPhone='';if(!t.contactTitle)t.contactTitle='';if(!t.website)t.website='';if(!t.referrerName)t.referrerName='';if(!t.created)t.created=today;if(!t.status)t.status='Watching';if(!t.warmth)t.warmth='Cold'});
+  toast('Saving...');
+  try{
+    await sbSaveLostDeal(d);
+    await sbDeleteAllDealChildren(id);
+    await sbDeleteDeal(id);
 
-  D.lostDeals.push({...d});
-  D.deals=D.deals.filter(x=>x.id!==id);
-  D.tasks=D.tasks.filter(t=>t.deal!==id);
-  save();clM();rAll();toast(d.co+' marked as lost');
+    if(!D.lostDeals)D.lostDeals=[];
+    D.lostDeals.push({...d});
+    D.deals=D.deals.filter(x=>x.id!==id);
+    D.tasks=D.tasks.filter(t=>t.deal!==id);
+    save();clM();rAll();toast(d.co+' marked as lost');
+  }catch(err){
+    console.error('confirmLost failed:',err);
+    alert('Failed to mark as lost: '+err.message);
+  }
 };
 
 
@@ -1560,7 +1764,7 @@ window.vDeal=function(id){
     html+='<div id="si-body-'+d.id+'">';
     d.savedInsights.forEach(function(si,idx){
       var siHtml=si.text.replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>').replace(/\n/g,'<br>');
-      html+='<div style="padding:12px;font-size:12px;line-height:1.6;color:var(--ink);background:#faf8f3;border-radius:5px;margin-bottom:6px;border:1px solid var(--line)"><div style="font-size:9px;color:var(--warm);font-weight:600;margin-bottom:4px">Saved '+si.date+'</div><div>'+siHtml+'</div><button class="rb" style="margin-top:6px;font-size:10px;padding:2px 6px" onclick="if(confirm(\'Delete?\')){fd(\''+d.id+'\').savedInsights.splice('+idx+',1);save();vDeal(\''+d.id+'\')}">Remove</button></div>';
+      html+='<div style="padding:12px;font-size:12px;line-height:1.6;color:var(--ink);background:#faf8f3;border-radius:5px;margin-bottom:6px;border:1px solid var(--line)"><div style="font-size:9px;color:var(--warm);font-weight:600;margin-bottom:4px">Saved '+si.date+'</div><div>'+siHtml+'</div><button class="rb" style="margin-top:6px;font-size:10px;padding:2px 6px" onclick="delSavedInsight(\''+d.id+'\','+idx+')">Remove</button></div>';
     });
     html+='</div></div>';
   }
@@ -1622,7 +1826,16 @@ window.vDeal=function(id){
   var cc=D.aiCache[d.id];if(cc&&dd(cc.date,today)<1)renderAI(d.id,cc.text);
 };
 
-window.cycleBP=function(did,idx){const d=fd(did);if(!d||!d.buyerProcess)return;const states=['unknown','pending','done'];const cur=d.buyerProcess[idx].status;d.buyerProcess[idx].status=states[(states.indexOf(cur)+1)%3];save();vDeal(did)};
+window.cycleBP=async function(did,idx){
+  const d=fd(did);if(!d||!d.buyerProcess)return;
+  const states=['unknown','pending','done'];
+  const step=d.buyerProcess[idx];
+  const old=step.status;
+  step.status=states[(states.indexOf(old)+1)%3];
+  vDeal(did);
+  try{await sbSaveBuyerStep(did,step);save()}
+  catch(err){console.error('cycleBP failed:',err);step.status=old;vDeal(did);alert('Failed to save: '+err.message)}
+};
 
 // ═══ TASKS ═══
 let taskView='list',calMonth=new Date().getMonth(),calYear=new Date().getFullYear();
@@ -1689,8 +1902,11 @@ function rTasks(ph){
   $('#p-tasks').innerHTML=html;
 }
 
-window.chgStatus=function(id,status){
-  const t=D.tasks.find(x=>x.id===id);if(t){t.status=status;save();rAll();toast(TASK_ST_LABEL[status])}
+window.chgStatus=async function(id,status){
+  const t=D.tasks.find(x=>x.id===id);if(!t)return;
+  const old=t.status;t.status=status;rAll();
+  try{await sbSaveTaskStatus(id,status);save();toast(TASK_ST_LABEL[status])}
+  catch(err){console.error('chgStatus failed:',err);t.status=old;rAll();alert('Failed to save status: '+err.message)}
 };
 
 function renderCalendar(){
@@ -1767,7 +1983,13 @@ function renderCalendar(){
   html+=`</div></div>`;
   return html;
 }
-window.cTask=function(id){const t=D.tasks.find(x=>x.id===id);if(t){t.status=t.status==='done'?'not_started':'done';save();rAll();toast(t.status==='done'?'Done':'Reopened')}};
+window.cTask=async function(id){
+  const t=D.tasks.find(x=>x.id===id);if(!t)return;
+  const old=t.status;const newStatus=t.status==='done'?'not_started':'done';
+  t.status=newStatus;rAll();
+  try{await sbSaveTaskStatus(id,newStatus);save();toast(newStatus==='done'?'Done':'Reopened')}
+  catch(err){console.error('cTask failed:',err);t.status=old;rAll();alert('Failed to save: '+err.message)}
+};
 
 window.extendTaskM=function(id){
   const t=D.tasks.find(x=>x.id===id);if(!t)return;
@@ -1781,12 +2003,19 @@ window.extendTaskM=function(id){
   `,`<button class="btn gh" onclick="clM()">Cancel</button><button class="btn" onclick="saveExtend('${id}')">Extend</button>`);
 };
 
-window.saveExtend=function(id){
+window.saveExtend=async function(id){
   const t=D.tasks.find(x=>x.id===id);if(!t)return;
-  if(!t.extensions)t.extensions=[];
-  t.extensions.push({oldDate:t.due,newDate:$('#ext-d').value,reason:$('#ext-r').value,note:$('#ext-n').value,date:today});
-  t.due=$('#ext-d').value;
-  save();clM();rAll();toast('Deadline extended');
+  const ext={oldDate:t.due,newDate:$('#ext-d').value,reason:$('#ext-r').value,note:$('#ext-n').value,date:today};
+  try{
+    await sbSaveTaskExtension(id,ext,ext.newDate);
+    if(!t.extensions)t.extensions=[];
+    t.extensions.push(ext);
+    t.due=ext.newDate;
+    save();clM();rAll();toast('Deadline extended');
+  }catch(err){
+    console.error('saveExtend failed:',err);
+    alert('Failed to save extension: '+err.message);
+  }
 };
 
 
@@ -2126,25 +2355,22 @@ function rCfg(ph){
     <button class="btn sm" onclick="D.targets.annualTarget=+$('#s-r').value;D.targets.fiscalYearStart=+$('#s-fy').value;D.targets.avgCycleDays=+$('#s-c').value;D.targets.pipelineFrom=$('#s-pf').value;D.targets.forecastFrom=$('#s-ff').value;D.targets.actualRevenueFrom=$('#s-af').value;save();rAll();toast('Saved')">Save</button></div>
 
   <div class="cd"><h3>Product Partners</h3><div class="ds">Companies whose products you resell. Your markup (SAR) is set per deal, not here — since it varies based on your involvement in each deal.</div>
-    ${(D.partners||[]).map((p,i)=>`<div style="display:flex;align-items:center;gap:8px;padding:4px 0"><span style="flex:1;font-size:12px">${p}</span><button onclick="D.partners.splice(${i},1);save();rv('cfg')" style="background:none;border:none;cursor:pointer;color:var(--ink3);font-size:13px">×</button></div>`).join('')}
-    <div style="display:flex;gap:4px;margin-top:6px"><input id="npp" placeholder="Product partner name" style="flex:1;padding:4px 8px;border:1px solid var(--lineS);border-radius:5px;font-size:12px"><button class="btn sm" onclick="if($('#npp').value){D.partners.push($('#npp').value);save();rv('cfg')}">Add</button></div>
+    ${(D.partners||[]).map((p,i)=>`<div style="display:flex;align-items:center;gap:8px;padding:4px 0"><span style="flex:1;font-size:12px">${p}</span><button onclick="delProductPartner(${i})" style="background:none;border:none;cursor:pointer;color:var(--ink3);font-size:13px">×</button></div>`).join('')}
+    <div style="display:flex;gap:4px;margin-top:6px"><input id="npp" placeholder="Product partner name" style="flex:1;padding:4px 8px;border:1px solid var(--lineS);border-radius:5px;font-size:12px"><button class="btn sm" onclick="addProductPartner()">Add</button></div>
   </div>
 
   <div class="cd"><h3>Referral Partners</h3><div class="ds">People or companies that bring you leads. Each gets a fixed SAR fee per deal — not a percentage. Auto-fills on the deal form, overridable per deal.</div>
-    <div style="margin-bottom:8px">${Object.entries(D.referralPartners||{}).filter(e=>e[0]).map(([name,fee])=>`<div style="display:flex;align-items:center;gap:8px;padding:4px 0"><span style="flex:1;font-size:12px">${name}</span><input type="number" value="${fee}" min="0" style="width:80px;padding:4px 6px;border:1px solid var(--lineS);border-radius:4px;font-size:12px;text-align:center" onchange="D.referralPartners['${name}']=+this.value;save()"><span style="font-size:11px;color:var(--ink3)">SAR fee</span><button onclick="delete D.referralPartners['${name}'];save();rv('cfg')" style="background:none;border:none;cursor:pointer;color:var(--ink3);font-size:13px">×</button></div>`).join('')}</div>
-    <div style="display:flex;gap:4px"><input id="nrp" placeholder="Referral partner name" style="flex:1;padding:4px 8px;border:1px solid var(--lineS);border-radius:5px;font-size:12px"><input id="nrpp" type="number" placeholder="SAR fee" value="5000" min="0" style="width:80px;padding:4px 8px;border:1px solid var(--lineS);border-radius:5px;font-size:12px"><button class="btn sm" onclick="if($('#nrp').value){D.referralPartners[$('#nrp').value]=+$('#nrpp').value||5000;save();rv('cfg')}">Add</button></div>
+    <div style="margin-bottom:8px">${Object.entries(D.referralPartners||{}).filter(e=>e[0]).map(([name,fee])=>`<div style="display:flex;align-items:center;gap:8px;padding:4px 0"><span style="flex:1;font-size:12px">${name}</span><input type="number" value="${fee}" min="0" style="width:80px;padding:4px 6px;border:1px solid var(--lineS);border-radius:4px;font-size:12px;text-align:center" onchange="updateReferralFee('${name}',this.value)"><span style="font-size:11px;color:var(--ink3)">SAR fee</span><button onclick="delReferralPartner('${name}')" style="background:none;border:none;cursor:pointer;color:var(--ink3);font-size:13px">×</button></div>`).join('')}</div>
+    <div style="display:flex;gap:4px"><input id="nrp" placeholder="Referral partner name" style="flex:1;padding:4px 8px;border:1px solid var(--lineS);border-radius:5px;font-size:12px"><input id="nrpp" type="number" placeholder="SAR fee" value="5000" min="0" style="width:80px;padding:4px 8px;border:1px solid var(--lineS);border-radius:5px;font-size:12px"><button class="btn sm" onclick="addReferralPartner()">Add</button></div>
   </div>
   <div class="cd"><h3>Stages</h3><div class="ds">Last stage = won stage.</div>
     <div id="stg-list">${D.stages.map((s,i)=>`<div style="display:flex;align-items:center;gap:6px;padding:5px 8px;background:#faf8f3;border:1px solid var(--line);border-radius:5px;margin-bottom:3px"><span style="color:var(--ink3);cursor:grab">⠿</span><input value="${s}" style="flex:1;padding:4px 8px;border:1px solid var(--line);border-radius:4px;font-size:12px" data-si="${i}">${i===D.stages.length-1?'<span style="font-size:9px;font-weight:600;padding:2px 6px;border-radius:3px;background:var(--gbg);color:var(--green)">won</span>':''}<button class="rb" style="padding:2px 6px" onclick="D.stages.splice(${i},1);save();rv('cfg')">×</button></div>`).join('')}</div>
     <div style="display:flex;gap:6px;margin-top:6px"><input id="ns" placeholder="New stage" style="flex:1;padding:5px 8px;border:1px solid var(--lineS);border-radius:5px;font-size:12px"><button class="btn sm" onclick="if($('#ns').value){D.stages.splice(D.stages.length-1,0,$('#ns').value);save();rv('cfg')}">Add</button></div>
     <button class="btn sm" style="margin-top:6px" onclick="document.querySelectorAll('#stg-list input[data-si]').forEach(i=>{D.stages[+i.dataset.si]=i.value});save();rv('cfg');toast('Saved')">Save Names</button></div>
-  <div class="g2">
-    <div class="cd"><h3>Products</h3><div style="display:flex;flex-direction:column;gap:4px;margin-bottom:6px">${D.products.map((p,i)=>`<div style="display:flex;align-items:center;gap:6px"><input value="${p}" style="flex:1;padding:4px 8px;border:1px solid var(--line);border-radius:4px;font-size:12px" data-pi="${i}"><button onclick="D.products.splice(${i},1);save();rv('cfg')" style="background:none;border:none;cursor:pointer;color:var(--ink3);font-size:13px">×</button></div>`).join('')}</div>
-      <button class="btn sm" style="margin-bottom:6px" onclick="document.querySelectorAll('input[data-pi]').forEach(function(el){var i=+el.dataset.pi,oldN=D.products[i],newN=el.value.trim();if(oldN!==newN&&newN){D.deals.forEach(function(d){if(d.product===oldN)d.product=newN});if(D.productProfiles&&D.productProfiles[oldN]){D.productProfiles[newN]=D.productProfiles[oldN];delete D.productProfiles[oldN]}D.products[i]=newN}});save();rv('cfg');toast('Products updated')">Save Names</button>
-      <div style="display:flex;gap:4px"><input id="np" placeholder="New product" style="flex:1;padding:4px 8px;border:1px solid var(--lineS);border-radius:5px;font-size:12px"><button class="btn sm" onclick="if($('#np').value){D.products.push($('#np').value);save();rv('cfg')}">Add</button></div></div>
-    <div class="cd"><h3>Partners</h3><div class="ds">Companies you co-sell with.</div><div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px">${(D.partners||[]).map((c,i)=>`<span style="display:inline-flex;align-items:center;gap:3px;padding:4px 8px;background:#faf8f3;border-radius:5px;font-size:11px;border:1px solid var(--line)">${c}<button onclick="D.partners.splice(${i},1);save();rv('cfg')" style="background:none;border:none;cursor:pointer;color:var(--ink3);font-size:13px">×</button></span>`).join('')}</div>
-      <div style="display:flex;gap:4px"><input id="nc2" placeholder="New partner" style="flex:1;padding:4px 8px;border:1px solid var(--lineS);border-radius:5px;font-size:12px"><button class="btn sm" onclick="if($('#nc2').value){D.partners.push($('#nc2').value);save();rv('cfg')}">Add</button></div></div>
-  </div>
+  <div class="cd"><h3>Products</h3><div class="ds">Rename cascades to every deal and product profile using this name.</div>
+    <div id="prod-list" style="display:flex;flex-direction:column;gap:4px;margin-bottom:6px">${D.products.map((p,i)=>`<div style="display:flex;align-items:center;gap:6px"><input value="${p}" style="flex:1;padding:4px 8px;border:1px solid var(--line);border-radius:4px;font-size:12px" data-pi="${i}"><button onclick="delProduct(${i})" style="background:none;border:none;cursor:pointer;color:var(--ink3);font-size:13px">×</button></div>`).join('')}</div>
+    <div style="display:flex;gap:4px;margin-bottom:6px"><input id="np" placeholder="New product" style="flex:1;padding:4px 8px;border:1px solid var(--lineS);border-radius:5px;font-size:12px"><button class="btn sm" onclick="addProduct()">Add</button></div>
+    <button class="btn sm" onclick="saveProductRenames()">Save Names</button></div>
   <div class="cd"><h3>Lead Sources</h3><div class="ds">How leads reach you. Configurable.</div><div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px">${(D.sources||[]).map((s,i)=>`<span style="display:inline-flex;align-items:center;gap:3px;padding:4px 8px;background:#faf8f3;border-radius:5px;font-size:11px;border:1px solid var(--line)">${s}<button onclick="D.sources.splice(${i},1);save();rv('cfg')" style="background:none;border:none;cursor:pointer;color:var(--ink3);font-size:13px">×</button></span>`).join('')}</div>
     <div style="display:flex;gap:4px"><input id="ns2" placeholder="New source" style="flex:1;padding:4px 8px;border:1px solid var(--lineS);border-radius:5px;font-size:12px"><button class="btn sm" onclick="if($('#ns2').value){D.sources.push($('#ns2').value);save();rv('cfg')}">Add</button></div></div>
   </div>
@@ -2206,25 +2432,46 @@ window.dealM=function(id){
     <div class="fr"><label>Win Theme</label><input id="f-wt" value="${l.winTheme||''}" placeholder="e.g. Only platform with native Arabic sentiment analysis in-region"></div></div>
   `,`${!isN?`<button class="btn dg" onclick="clM();markLostM('${id}')">Mark as Lost</button><button class="btn dg" onclick="delDeal('${id}')" style="margin-right:auto">Delete</button>`:''}<button class="btn gh" onclick="clM()">Cancel</button><button class="btn" onclick="saveDeal('${id||''}')">Save</button>`);
 };
-window.saveDeal=function(id){
+window.saveDeal=async function(id){
   const isPartner=$('#f-ip').value==='yes';
   const revType=$('#f-rt').value;
   const partnerBase=revType==='partner_share'?(+$('#f-pbp').value||0):0;
   const yourMarkup=revType==='partner_share'?(+$('#f-ym').value||0):(+$('#f-arr').value||0);
   const newStage=$('#f-st').value;
-  const obj={co:$('#f-co').value,contact:$('#f-ct').value,contactTitle:$('#f-ctt').value,contactPhone:$('#f-ctp').value,contactEmail:$('#f-cte').value,stage:newStage,arr:+$('#f-arr').value||0,confidence:$('#f-conf').value,revenueType:revType,partnerBasePrice:partnerBase,yourMargin:yourMarkup,marginPct:0,src:$('#f-src').value,product:$('#f-pr').value,isPartnerDeal:isPartner,partner:isPartner?($('#f-pn').value||''):'',referralPartner:$('#f-rp').value||'',referralFee:+$('#f-rfee').value||0,nextAction:$('#f-na').value,created:$('#f-cr').value,notes:$('#f-n').value,dealContext:$('#f-dctx').value,competitive:$('#f-comp').value,winTheme:$('#f-wt').value};
+  const obj={co:$('#f-co').value,contact:$('#f-ct').value,contactTitle:$('#f-ctt').value,contactPhone:$('#f-ctp').value,contactEmail:$('#f-cte').value,stage:newStage,arr:+$('#f-arr').value||0,confidence:$('#f-conf').value,revenueType:revType,partnerBasePrice:partnerBase,yourMargin:yourMarkup,src:$('#f-src').value,product:$('#f-pr').value,isPartnerDeal:isPartner,partner:isPartner?($('#f-pn').value||''):'',referralPartner:$('#f-rp').value||'',referralFee:+$('#f-rfee').value||0,nextAction:$('#f-na').value,created:$('#f-cr').value,notes:$('#f-n').value,dealContext:$('#f-dctx').value,competitive:$('#f-comp').value,winTheme:$('#f-wt').value};
+  let target;
   if(id){
     const existing=fd(id);
-    // Detect stage change → reset stageEnteredDate
     if(existing.stage!==newStage) obj.stageEnteredDate=today;
     else obj.stageEnteredDate=existing.stageEnteredDate||today;
     Object.assign(existing,obj);
+    target=existing;
   }else{
-    obj.id='D-'+String(D.deals.length+1).padStart(3,'0');obj.stageEnteredDate=today;obj.stakeholders=[];obj.buyerProcess=[];obj.activities=[];D.deals.push(obj);
+    obj.stageEnteredDate=today;obj.stakeholders=[];obj.buyerProcess=[];obj.activities=[];obj.id=null;
+    D.deals.push(obj);
+    target=obj;
   }
-  save();clM();rAll();toast(id?'Updated':'Created');
+  toast(id?'Saving...':'Creating...');
+  try{
+    await sbSaveDeal(target);
+    save();clM();rAll();toast(id?'Updated':'Created');
+  }catch(err){
+    console.error('saveDeal failed:',err);
+    alert('Save failed: '+err.message+'\n\nYour change was NOT saved to the database.');
+  }
 };
-window.delDeal=function(id){D.deals=D.deals.filter(d=>d.id!==id);D.tasks=D.tasks.filter(t=>t.deal!==id);save();clM();sw('pipe');toast('Deleted')};
+window.delDeal=async function(id){
+  if(!confirm('Delete this deal permanently? This cannot be undone.'))return;
+  try{
+    await sbDeleteAllDealChildren(id);
+    await sbDeleteDeal(id);
+    D.deals=D.deals.filter(d=>d.id!==id);D.tasks=D.tasks.filter(t=>t.deal!==id);
+    save();clM();sw('pipe');toast('Deleted');
+  }catch(err){
+    console.error('delDeal failed:',err);
+    alert('Delete failed: '+err.message);
+  }
+};
 
 window.taskM=function(id,dealId){
   const t=id?D.tasks.find(x=>x.id===id):null,isN=!t,l=t||{title:'',deal:dealId||'',due:today,priority:'medium',status:'not_started'};
@@ -2234,23 +2481,48 @@ window.taskM=function(id,dealId){
     <div class="fr r2"><div><label>Priority</label><select id="ft-p">${PRIOS.map(p=>`<option ${p===l.priority?'selected':''}>${p}</option>`).join('')}</select></div><div><label>Status</label><select id="ft-st">${TASK_ST.map(s=>`<option value="${s}" ${s===l.status?'selected':''}>${TASK_ST_LABEL[s]}</option>`).join('')}</select></div></div>
   `,`${!isN?`<button class="btn dg" onclick="delTask('${id}')">Delete</button>`:''}<button class="btn gh" onclick="clM()">Cancel</button><button class="btn" onclick="saveTask('${id||''}')">Save</button>`);
 };
-window.saveTask=function(id){const obj={title:$('#ft-t').value,deal:$('#ft-d').value,due:$('#ft-du').value,priority:$('#ft-p').value,status:$('#ft-st').value};if(id){Object.assign(D.tasks.find(x=>x.id===id),obj)}else{obj.id='T-'+String(D.tasks.length+1).padStart(3,'0');D.tasks.push(obj)}save();clM();rAll();toast(id?'Updated':'Created')};
-window.delTask=function(id){D.tasks=D.tasks.filter(t=>t.id!==id);save();clM();rAll();toast('Deleted')};
+window.saveTask=async function(id){
+  const obj={title:$('#ft-t').value,deal:$('#ft-d').value,due:$('#ft-du').value,priority:$('#ft-p').value,status:$('#ft-st').value};
+  let target;
+  if(id){target=D.tasks.find(x=>x.id===id);Object.assign(target,obj)}
+  else{obj.id=null;obj.extensions=[];D.tasks.push(obj);target=obj}
+  try{
+    await sbSaveTask(target);
+    save();clM();rAll();toast(id?'Updated':'Created');
+  }catch(err){
+    console.error('saveTask failed:',err);
+    alert('Save failed: '+err.message);
+  }
+};
+window.delTask=async function(id){
+  try{
+    await sbDeleteTask(id);
+    D.tasks=D.tasks.filter(t=>t.id!==id);save();clM();rAll();toast('Deleted');
+  }catch(err){
+    console.error('delTask failed:',err);
+    alert('Delete failed: '+err.message);
+  }
+};
 
 window.actM=function(did){opM('Log Activity',`
   <div class="fr r2"><div><label>Type</label><select id="fa-t"><option>Call</option><option>WhatsApp</option><option>Email</option><option>Meeting</option><option>Demo</option><option>Check-in</option><option>Note</option></select></div><div><label>Date</label><input type="date" id="fa-d" value="${today}"></div></div>
   <div class="fr"><label>What happened?</label><textarea id="fa-n"></textarea></div>
 `,`<button class="btn gh" onclick="clM()">Cancel</button><button class="btn" onclick="saveAct('${did}')">Save</button>`)};
-window.saveAct=function(did){
+window.saveAct=async function(did){
   const d=fd(did);if(!d){toast('Deal not found');return}
   const typeEl=$('#fa-t'),dateEl=$('#fa-d'),noteEl=$('#fa-n');
   if(!typeEl||!dateEl||!noteEl){toast('Form error — try again');return}
   const activity={date:dateEl.value||today,type:typeEl.value||'Note',note:noteEl.value||''};
-  if(!d.activities)d.activities=[];
-  d.activities.unshift(activity);
-  // Also update stageEnteredDate concept — a fresh activity means the deal is alive
-  save();clM();toast('Activity logged: '+activity.type);
-  if(cV==='det')vDeal(did);else rAll();
+  try{
+    await sbSaveActivity(did,activity);
+    if(!d.activities)d.activities=[];
+    d.activities.unshift(activity);
+    save();clM();toast('Activity logged: '+activity.type);
+    if(cV==='det')vDeal(did);else rAll();
+  }catch(err){
+    console.error('saveAct failed:',err);
+    alert('Failed to save activity: '+err.message);
+  }
 };
 
 window.stkM=function(did){opM('Add Stakeholder',`
@@ -2259,13 +2531,37 @@ window.stkM=function(did){opM('Add Stakeholder',`
   <div class="fr r3"><div><label>Role</label><select id="fs-r">${ROLES.map(r=>`<option>${r}</option>`).join('')}</select></div><div><label>Influence</label><select id="fs-i"><option>high</option><option>medium</option><option>low</option></select></div><div><label>Disposition</label><select id="fs-d">${DISP.map(d=>`<option>${d}</option>`).join('')}</select></div></div>
   <div class="fr"><label>Reports To</label><input id="fs-rt" placeholder="Name of person they report to (optional)"></div>
 `,`<button class="btn gh" onclick="clM()">Cancel</button><button class="btn" onclick="saveStk('${did}')">Save</button>`)};
-window.saveStk=function(did){const d=fd(did);if(!d)return;if(!d.stakeholders)d.stakeholders=[];d.stakeholders.push({name:$('#fs-n').value,title:$('#fs-tt').value,phone:$('#fs-ph').value,email:$('#fs-em').value,role:$('#fs-r').value,influence:$('#fs-i').value,disposition:$('#fs-d').value,reportsTo:$('#fs-rt').value});save();clM();toast('Added');vDeal(did)};
+window.saveStk=async function(did){
+  const d=fd(did);if(!d)return;
+  const stk={name:$('#fs-n').value,title:$('#fs-tt').value,phone:$('#fs-ph').value,email:$('#fs-em').value,role:$('#fs-r').value,influence:$('#fs-i').value,disposition:$('#fs-d').value,reportsTo:$('#fs-rt').value};
+  try{
+    await sbSaveStakeholder(did,stk);
+    if(!d.stakeholders)d.stakeholders=[];
+    d.stakeholders.push(stk);
+    save();clM();toast('Added');vDeal(did);
+  }catch(err){
+    console.error('saveStk failed:',err);
+    alert('Failed to save stakeholder: '+err.message);
+  }
+};
 
 window.bpM=function(did){opM('Add Buyer Process Step',`
   <div class="fr"><label>Step</label><input id="fb-s" placeholder="e.g. Budget approval by VP Finance"></div>
   <div class="fr"><label>Status</label><select id="fb-st"><option>unknown</option><option>pending</option><option>done</option></select></div>
 `,`<button class="btn gh" onclick="clM()">Cancel</button><button class="btn" onclick="saveBP('${did}')">Save</button>`)};
-window.saveBP=function(did){const d=fd(did);if(!d)return;if(!d.buyerProcess)d.buyerProcess=[];d.buyerProcess.push({step:$('#fb-s').value,status:$('#fb-st').value});save();clM();toast('Added');vDeal(did)};
+window.saveBP=async function(did){
+  const d=fd(did);if(!d)return;
+  const step={step:$('#fb-s').value,status:$('#fb-st').value,_order:(d.buyerProcess||[]).length};
+  try{
+    await sbSaveBuyerStep(did,step);
+    if(!d.buyerProcess)d.buyerProcess=[];
+    d.buyerProcess.push(step);
+    save();clM();toast('Added');vDeal(did);
+  }catch(err){
+    console.error('saveBP failed:',err);
+    alert('Failed to save buyer process step: '+err.message);
+  }
+};
 
 // ═══ PRODUCT PROFILES ═══
 window.ppM=function(prod){
@@ -2279,16 +2575,23 @@ window.ppM=function(prod){
     <div class="fr"><label>Saudi Context</label><textarea id="pp-ctx" placeholder="How this product aligns with Vision 2030, NTP, or Saudi regulations">${pp.saudiContext||''}</textarea></div>
   `,`<button class="btn gh" onclick="clM()">Cancel</button><button class="btn" onclick="savePP('${prod}')">Save</button>`);
 };
-window.savePP=function(prod){
-  if(!D.productProfiles)D.productProfiles={};
-  D.productProfiles[prod]={
+window.savePP=async function(prod){
+  const profile={
     tagline:$('#pp-tl').value,icp:$('#pp-icp').value,
     differentiators:$('#pp-diff').value.split('\n').map(s=>s.trim()).filter(Boolean),
     commonObjections:$('#pp-obj').value.split('\n').map(s=>s.trim()).filter(Boolean),
     competitors:$('#pp-comp').value.split(',').map(s=>s.trim()).filter(Boolean),
     saudiContext:$('#pp-ctx').value
   };
-  save();clM();rv('cfg');toast('Profile saved');
+  try{
+    await sbSaveProductProfile(prod,profile);
+    if(!D.productProfiles)D.productProfiles={};
+    D.productProfiles[prod]=profile;
+    save();clM();rv('cfg');toast('Profile saved');
+  }catch(err){
+    console.error('savePP failed:',err);
+    alert('Failed to save profile: '+err.message);
+  }
 };
 
 // ═══ REFERENCES ═══
@@ -2298,8 +2601,32 @@ window.refM=function(did){opM('Add Reference',`
   <div class="fr"><label>URL</label><input id="fr-u" placeholder="https://drive.google.com/..." type="url"></div>
   <div class="fr r2"><div><label>Type</label><select id="fr-t">${REF_TYPES.map(t=>`<option>${t}</option>`).join('')}</select></div><div><label>Date</label><input type="date" id="fr-d" value="${today}"></div></div>
 `,`<button class="btn gh" onclick="clM()">Cancel</button><button class="btn" onclick="saveRef('${did}')">Save</button>`)};
-window.saveRef=function(did){const d=fd(did);if(!d)return;if(!d.references)d.references=[];const url=$('#fr-u').value;if(!url){toast('URL required');return}d.references.push({label:$('#fr-l').value||'Untitled',url,type:$('#fr-t').value,date:$('#fr-d').value});save();clM();toast('Reference added');vDeal(did)};
-window.delRef=function(did,idx){const d=fd(did);if(!d||!d.references)return;d.references.splice(idx,1);save();vDeal(did);toast('Removed')};
+window.saveRef=async function(did){
+  const d=fd(did);if(!d)return;
+  const url=$('#fr-u').value;if(!url){toast('URL required');return}
+  const ref={label:$('#fr-l').value||'Untitled',url,type:$('#fr-t').value,date:$('#fr-d').value};
+  try{
+    await sbSaveReference(did,ref);
+    if(!d.references)d.references=[];
+    d.references.push(ref);
+    save();clM();toast('Reference added');vDeal(did);
+  }catch(err){
+    console.error('saveRef failed:',err);
+    alert('Failed to save reference: '+err.message);
+  }
+};
+window.delRef=async function(did,idx){
+  const d=fd(did);if(!d||!d.references)return;
+  const ref=d.references[idx];
+  try{
+    if(ref._id)await sbDeleteReference(ref._id);
+    d.references.splice(idx,1);
+    save();vDeal(did);toast('Removed');
+  }catch(err){
+    console.error('delRef failed:',err);
+    alert('Failed to delete: '+err.message);
+  }
+};
 
 // ═══ STRATEGY / ANALYSIS ═══
 // ═══ REVENUE VIEW ═══
@@ -2480,9 +2807,288 @@ window.genPartnerReport=function(dealId,type){
 };
 
 // ═══ DATA OPS ═══
+// ═══ PRODUCT MANAGEMENT (Supabase-backed) ═══
+window.addProduct=async function(){
+  const val=$('#np').value.trim();
+  if(!val)return;
+  if(D.products.includes(val)){alert('Product already exists');return}
+  D.products.push(val);
+  save();
+  rv('cfg');
+};
+
+window.delProduct=async function(i){
+  const name=D.products[i];
+  const inUse=D.deals.filter(d=>d.product===name).length;
+  if(inUse>0){
+    if(!confirm(`${inUse} deal(s) use "${name}". Removing it from the list won't change those deals, but you won't be able to select it for new deals. Continue?`))return;
+  }
+  D.products.splice(i,1);
+  save();
+  rv('cfg');
+};
+
+window.saveProductRenames=async function(){
+  const inputs=document.querySelectorAll('#prod-list input[data-pi]');
+  const renames=[]; // {oldName, newName}
+  inputs.forEach(el=>{
+    const i=+el.dataset.pi;
+    const oldName=D.products[i];
+    const newName=el.value.trim();
+    if(oldName!==newName&&newName){
+      renames.push({oldName,newName});
+      D.products[i]=newName;
+    }
+  });
+  if(!renames.length){toast('No changes to save');return}
+
+  toast('Saving renames...');
+  try{
+    for(const r of renames){
+      // Update every deal in Supabase using the old product name
+      await sb.from('deals').update({product:r.newName}).eq('product',r.oldName);
+      // Update local D.deals to match immediately
+      D.deals.forEach(d=>{if(d.product===r.oldName)d.product=r.newName});
+      // Update product profile if one exists
+      await sb.from('product_profiles').update({product_name:r.newName}).eq('product_name',r.oldName);
+      if(D.productProfiles&&D.productProfiles[r.oldName]){
+        D.productProfiles[r.newName]=D.productProfiles[r.oldName];
+        delete D.productProfiles[r.oldName];
+      }
+    }
+    save();
+    rAll();
+    toast(`Renamed ${renames.length} product(s) — updated across all deals`);
+  }catch(err){
+    console.error('Product rename error:',err);
+    alert('Rename failed: '+err.message);
+  }
+};
+
 window.expD=function(){const b=new Blob([JSON.stringify(D,null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='revops-crm.json';a.click();toast('Exported')};
-window.impD=function(){const i=$('#impF');i.onchange=e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=ev=>{try{D=JSON.parse(ev.target.result);save();rAll();toast('Imported')}catch{alert('Invalid JSON')}};r.readAsText(f)};i.click()};
-window.rstD=function(){if(confirm('Reset all data?')){D=structuredClone(DEF);save();rAll();toast('Reset')}};
+
+// ═══ PRODUCT PARTNERS (Settings) ═══
+window.addProductPartner=async function(){
+  const val=$('#npp').value.trim();
+  if(!val)return;
+  if(D.partners.includes(val)){alert('Product partner already exists');return}
+  try{
+    await sb.from('product_partners').insert({name:val,default_margin_pct:0});
+    D.partners.push(val);
+    save();rv('cfg');toast('Added');
+  }catch(err){
+    console.error('addProductPartner failed:',err);
+    alert('Failed to add: '+err.message);
+  }
+};
+window.delProductPartner=async function(i){
+  const name=D.partners[i];
+  const inUse=D.deals.filter(d=>d.partner===name).length;
+  if(inUse>0){
+    if(!confirm(`${inUse} deal(s) use "${name}" as their product partner. Remove anyway? Those deals keep the reference but it won't be selectable for new deals.`))return;
+  }
+  try{
+    await sb.from('product_partners').update({is_active:false}).eq('name',name);
+    D.partners.splice(i,1);
+    save();rv('cfg');toast('Removed');
+  }catch(err){
+    console.error('delProductPartner failed:',err);
+    alert('Failed to remove: '+err.message);
+  }
+};
+
+// ═══ REFERRAL PARTNERS (Settings) ═══
+window.addReferralPartner=async function(){
+  const name=$('#nrp').value.trim();
+  const fee=+$('#nrpp').value||5000;
+  if(!name)return;
+  if(D.referralPartners[name]!==undefined){alert('Referral partner already exists');return}
+  try{
+    await sb.from('referral_partners').insert({name,fixed_fee_sar:fee});
+    D.referralPartners[name]=fee;
+    save();rv('cfg');toast('Added');
+  }catch(err){
+    console.error('addReferralPartner failed:',err);
+    alert('Failed to add: '+err.message);
+  }
+};
+window.updateReferralFee=async function(name,newFee){
+  const fee=+newFee||0;
+  const old=D.referralPartners[name];
+  D.referralPartners[name]=fee;
+  try{
+    await sb.from('referral_partners').update({fixed_fee_sar:fee}).eq('name',name);
+    save();toast('Fee updated');
+  }catch(err){
+    console.error('updateReferralFee failed:',err);
+    D.referralPartners[name]=old;
+    alert('Failed to update fee: '+err.message);
+  }
+};
+window.delReferralPartner=async function(name){
+  const inUse=D.deals.filter(d=>d.referralPartner===name).length;
+  if(inUse>0){
+    if(!confirm(`${inUse} deal(s) reference "${name}" as their referral partner. Remove anyway?`))return;
+  }
+  try{
+    await sb.from('referral_partners').update({is_active:false}).eq('name',name);
+    delete D.referralPartners[name];
+    save();rv('cfg');toast('Removed');
+  }catch(err){
+    console.error('delReferralPartner failed:',err);
+    alert('Failed to remove: '+err.message);
+  }
+};
+window.impD=function(){
+  const i=$('#impF');
+  i.onchange=async e=>{
+    const f=e.target.files[0];if(!f)return;
+    const r=new FileReader();
+    r.onload=async ev=>{
+      let importData;
+      try{importData=JSON.parse(ev.target.result)}catch{alert('Invalid JSON file');return}
+
+      const mc=document.getElementById('mc');
+      mc.innerHTML='<div style="padding:60px;text-align:center"><div style="width:40px;height:40px;border:3px solid var(--gold);border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 16px"></div><div style="font-size:14px;color:var(--ink2)">Importing sample data to Supabase...</div><div id="imp-progress" style="font-size:11px;color:var(--ink3);margin-top:8px">Starting...</div></div>';
+      const prog=(msg)=>{const el=document.getElementById('imp-progress');if(el)el.textContent=msg};
+
+      try{
+        // 1. Product Partners
+        if(importData.productPartners?.length){
+          prog('Adding product partners...');
+          for(const p of importData.productPartners){
+            await sb.from('product_partners').upsert({name:p.name,default_margin_pct:0,notes:p.notes||''},{onConflict:'name'});
+          }
+        }
+        // 2. Referral Partners
+        if(importData.referralPartners?.length){
+          prog('Adding referral partners...');
+          for(const p of importData.referralPartners){
+            await sb.from('referral_partners').upsert({name:p.name,fixed_fee_sar:p.fee||5000,notes:p.notes||''},{onConflict:'name'});
+          }
+        }
+        // Get partner IDs for linking
+        const {data:allPP}=await sb.from('product_partners').select('id,name');
+        const {data:allRP}=await sb.from('referral_partners').select('id,name');
+        const ppMap={};(allPP||[]).forEach(p=>ppMap[p.name]=p.id);
+        const rpMap={};(allRP||[]).forEach(p=>rpMap[p.name]=p.id);
+
+        // 3. Deals
+        const dealIdMap={}; // sample id -> real UUID
+        if(importData.deals?.length){
+          for(let idx=0;idx<importData.deals.length;idx++){
+            const d=importData.deals[idx];
+            prog(`Adding deal ${idx+1}/${importData.deals.length}: ${d.co}`);
+            const row={
+              company:d.co,contact_name:d.contact||'',contact_title:d.contactTitle||'',
+              contact_phone:d.contactPhone||'',contact_email:d.contactEmail||'',
+              stage:d.stage,stage_entered_date:d.stageEnteredDate||d.created||today,
+              confidence:d.confidence||'medium',deal_value:d.arr||0,
+              revenue_type:d.revenueType||'own_product',
+              partner_base_price:d.partnerBasePrice||0,
+              margin_pct:0,your_margin:d.yourMargin||0,
+              is_partner_deal:d.isPartnerDeal||false,
+              product_partner_id:d.partner?ppMap[d.partner]:null,
+              referral_partner_id:d.referralPartner?rpMap[d.referralPartner]:null,
+              referral_fee:d.referralFee||0,
+              product:d.product||'',source:d.src||'Inbound',
+              deal_context:d.dealContext||'',competitive:d.competitive||'',
+              win_theme:d.winTheme||'',notes:d.notes||'',
+              next_action:d.nextAction||null,created:d.created||today
+            };
+            const {data:newDeal}=await sb.from('deals').insert(row).select().single();
+            if(newDeal){
+              dealIdMap[d.id]=newDeal.id;
+              // Stakeholders
+              for(const s of (d.stakeholders||[])){
+                await sb.from('stakeholders').insert({deal_id:newDeal.id,name:s.name,title:s.title||'',phone:s.phone||'',email:s.email||'',role:s.role||'Influencer',influence:s.influence||'medium',disposition:s.disposition||'Neutral',reports_to:s.reportsTo||''});
+              }
+              // Activities
+              for(const a of (d.activities||[])){
+                await sb.from('activities').insert({deal_id:newDeal.id,activity_date:a.date,activity_type:a.type,note:a.note||''});
+              }
+              // Buyer process
+              for(let bi=0;bi<(d.buyerProcess||[]).length;bi++){
+                const b=d.buyerProcess[bi];
+                await sb.from('buyer_process_steps').insert({deal_id:newDeal.id,step_text:b.step,status:b.status||'unknown',sort_order:bi});
+              }
+            }
+          }
+        }
+
+        // 4. Tasks (linked to deals via dealIdMap)
+        if(importData.tasks?.length){
+          for(let idx=0;idx<importData.tasks.length;idx++){
+            const t=importData.tasks[idx];
+            prog(`Adding task ${idx+1}/${importData.tasks.length}`);
+            await sb.from('tasks').insert({
+              title:t.title,deal_id:t.deal?dealIdMap[t.deal]||null:null,
+              due_date:t.due,priority:t.priority||'medium',status:t.status||'not_started'
+            });
+          }
+        }
+
+        // 5. Prospect Targets
+        if(importData.targets?.length){
+          for(let idx=0;idx<importData.targets.length;idx++){
+            const t=importData.targets[idx];
+            prog(`Adding target ${idx+1}/${importData.targets.length}: ${t.co}`);
+            await sb.from('prospect_targets').insert({
+              company:t.co,sector:t.sector||'',location:t.location||'',company_size:t.size||'',
+              source:t.source||'',status:t.status||'Watching',warmth:t.warmth||'Cold',fit:t.fit||'Maybe',
+              product:t.product||'',use_case:t.useCase||'',angle:t.angle||'',
+              contact_name:t.contactName||'',contact_phone:t.contactPhone||'',contact_title:t.contactTitle||'',
+              next_step:t.nextStep||'',next_date:t.nextDate||null,created:t.created||today
+            });
+          }
+        }
+
+        prog('Reloading...');
+        await sbLoad();
+        rAll();
+        toast('Sample data imported successfully');
+      }catch(err){
+        console.error('Import error:',err);
+        alert('Import failed: '+err.message);
+        await sbLoad();rAll();
+      }
+    };
+    r.readAsText(f);
+  };
+  i.click();
+};
+
+window.rstD=async function(){
+  if(!confirm('This will DELETE ALL your deals, tasks, targets, and related data from Supabase. This cannot be undone. Continue?'))return;
+  const mc=document.getElementById('mc');
+  mc.innerHTML='<div style="padding:60px;text-align:center"><div style="font-size:14px;color:var(--ink2)">Clearing database...</div></div>';
+  try{
+    // Delete in order respecting foreign keys
+    await sb.from('stakeholders').delete().neq('id','00000000-0000-0000-0000-000000000000');
+    await sb.from('activities').delete().neq('id','00000000-0000-0000-0000-000000000000');
+    await sb.from('buyer_process_steps').delete().neq('id','00000000-0000-0000-0000-000000000000');
+    await sb.from('objections').delete().neq('id','00000000-0000-0000-0000-000000000000');
+    await sb.from('deal_exit_checks').delete().neq('id','00000000-0000-0000-0000-000000000000');
+    await sb.from('deal_references').delete().neq('id','00000000-0000-0000-0000-000000000000');
+    await sb.from('saved_insights').delete().neq('id','00000000-0000-0000-0000-000000000000');
+    await sb.from('task_extensions').delete().neq('id','00000000-0000-0000-0000-000000000000');
+    await sb.from('tasks').delete().neq('id','00000000-0000-0000-0000-000000000000');
+    await sb.from('deals').delete().neq('id','00000000-0000-0000-0000-000000000000');
+    await sb.from('target_research_logs').delete().neq('id','00000000-0000-0000-0000-000000000000');
+    await sb.from('target_ai_archive').delete().neq('id','00000000-0000-0000-0000-000000000000');
+    await sb.from('prospect_targets').delete().neq('id','00000000-0000-0000-0000-000000000000');
+    await sb.from('lost_deals').delete().neq('id','00000000-0000-0000-0000-000000000000');
+    await sb.from('review_notes').delete().neq('id','00000000-0000-0000-0000-000000000000');
+    await sb.from('ai_cache').delete().neq('id','00000000-0000-0000-0000-000000000000');
+    await sb.from('war_archive').delete().neq('id','00000000-0000-0000-0000-000000000000');
+    await sb.from('report_comments').delete().neq('id','00000000-0000-0000-0000-000000000000');
+    await sbLoad();rAll();
+    toast('All data cleared. Ready for real deals.');
+  }catch(err){
+    console.error('Reset error:',err);
+    alert('Reset failed: '+err.message);
+  }
+};
 
 
 // ═══ TARGETS ═══
@@ -2652,25 +3258,59 @@ function tgtFormM(id){
     <div class="fr"><label>Your Angle (one line)</label><input id="tg-ang" value="${t.angle||''}" placeholder="What makes them a fit, what pain you'd lead with"></div>
   `,`<button class="btn gh" onclick="clM()">Cancel</button>${id?`<button class="btn dg" onclick="delTgt('${id}')">Delete</button>`:''}<button class="btn" onclick="saveTgt('${id||''}')">Save</button>`);
 }
-window.saveTgt=function(id){
+window.saveTgt=async function(id){
   const obj={co:$('#tg-co').value,sector:$('#tg-sec').value,location:$('#tg-loc').value,source:$('#tg-src').value,referrerName:$('#tg-refn')?.value||'',product:$('#tg-pr').value,angle:$('#tg-ang').value};
-  if(id){Object.assign(ftgt(id),obj)}else{
-    // duplicate check
+  let target;
+  if(id){target=ftgt(id);Object.assign(target,obj)}
+  else{
     const dup=D.prospectTargets.find(t=>t.co.toLowerCase()===obj.co.toLowerCase())||D.deals.find(d=>d.co.toLowerCase()===obj.co.toLowerCase());
-    if(dup){if(!confirm(obj.co+' already exists'+(dup.stage?' as a deal':' as a target')+'. Add anyway?'))return}obj.id='TG-'+Date.now();obj.researchLog=[];obj.routeIn={name:'',relationship:'',asked:false,result:''};obj.created=today;obj.aiCache={};obj.aiArchive=[];obj.status='Watching';obj.warmth='Cold';obj.fit='Maybe';obj.size='';obj.useCase='';obj.contactName='';obj.contactPhone='';obj.contactTitle='';obj.website='';D.prospectTargets.push(obj)}
-  save();clM();rv('tgt');toast(id?'Updated':'Target added');
+    if(dup){if(!confirm(obj.co+' already exists'+(dup.stage?' as a deal':' as a target')+'. Add anyway?'))return}
+    obj.id=null;obj.researchLog=[];obj.routeIn={name:'',relationship:'',asked:false,result:''};obj.created=today;obj.aiArchive=[];obj.status='Watching';obj.warmth='Cold';obj.fit='Maybe';obj.size='';obj.useCase='';obj.contactName='';obj.contactPhone='';obj.contactTitle='';obj.website='';
+    D.prospectTargets.push(obj);target=obj;
+  }
+  try{
+    await sbSaveTarget(target);
+    save();clM();rv('tgt');toast(id?'Updated':'Target added');
+  }catch(err){
+    console.error('saveTgt failed:',err);
+    alert('Failed to save target: '+err.message);
+  }
 };
-window.delTgt=function(id){if(!confirm('Delete this target?'))return;D.prospectTargets=D.prospectTargets.filter(t=>t.id!==id);save();clM();rv('tgt');toast('Deleted')};
+window.delTgt=async function(id){
+  if(!confirm('Delete this target?'))return;
+  try{
+    await sbDeleteTarget(id);
+    D.prospectTargets=D.prospectTargets.filter(t=>t.id!==id);
+    save();clM();rv('tgt');toast('Deleted');
+  }catch(err){
+    console.error('delTgt failed:',err);
+    alert('Failed to delete: '+err.message);
+  }
+};
 
 window.tgtNextM=function(id){};
-window.saveTgtNext=function(id){const t=ftgt(id);t.nextStep=$('#tn-s').value;t.nextDate=$('#tn-d').value;
-  // sync task
-  let tk=D.tasks.find(x=>x.targetId===id);
-  if(t.nextStep){
-    if(!tk){tk={id:'TK-'+Date.now(),title:'',deal:'',targetId:id,due:'',priority:'medium',status:'not_started'};D.tasks.push(tk)}
-    tk.title=t.co+': '+t.nextStep;tk.due=t.nextDate||'';tk.status='not_started';
-  } else if(tk){D.tasks=D.tasks.filter(x=>x.id!==tk.id)}
-  save();clM();vTgt(id);toast('Updated')};
+window.saveTgtNext=async function(id){
+  const t=ftgt(id);
+  const oldStep=t.nextStep,oldDate=t.nextDate;
+  t.nextStep=$('#tn-s').value;t.nextDate=$('#tn-d').value;
+  try{
+    await sbSaveTarget(t);
+    let tk=D.tasks.find(x=>x.targetId===id);
+    if(t.nextStep){
+      if(!tk){tk={id:null,title:'',deal:'',targetId:id,due:'',priority:'medium',status:'not_started',extensions:[]};D.tasks.push(tk)}
+      tk.title=t.co+': '+t.nextStep;tk.due=t.nextDate||'';tk.status='not_started';
+      await sbSaveTask(tk);
+    } else if(tk){
+      if(tk.id)await sbDeleteTask(tk.id);
+      D.tasks=D.tasks.filter(x=>x.id!==tk.id);
+    }
+    save();clM();vTgt(id);toast('Updated');
+  }catch(err){
+    console.error('saveTgtNext failed:',err);
+    t.nextStep=oldStep;t.nextDate=oldDate;
+    alert('Failed to save: '+err.message);
+  }
+};
 
 window.tgtRouteM=function(id){
   const t=ftgt(id),r=t.routeIn||{};
@@ -2680,7 +3320,19 @@ window.tgtRouteM=function(id){
     <div class="fr r2"><div><label>Asked for intro?</label><select id="tr-a"><option${r.asked?' selected':''}>Yes</option><option${!r.asked?' selected':''}>No</option></select></div><div><label>Result</label><input id="tr-res" value="${r.result||''}"></div></div>
   `,`<button class="btn gh" onclick="clM()">Cancel</button><button class="btn" onclick="saveTgtRoute('${id}')">Save</button>`);
 };
-window.saveTgtRoute=function(id){const t=ftgt(id);t.routeIn={name:$('#tr-n').value,relationship:$('#tr-r').value,asked:$('#tr-a').value==='Yes',result:$('#tr-res').value};save();clM();vTgt(id);toast('Updated')};
+window.saveTgtRoute=async function(id){
+  const t=ftgt(id);
+  const old=t.routeIn;
+  t.routeIn={name:$('#tr-n').value,relationship:$('#tr-r').value,asked:$('#tr-a').value==='Yes',result:$('#tr-res').value};
+  try{
+    await sbSaveTarget(t);
+    save();clM();vTgt(id);toast('Updated');
+  }catch(err){
+    console.error('saveTgtRoute failed:',err);
+    t.routeIn=old;
+    alert('Failed to save: '+err.message);
+  }
+};
 
 window.tgtLogM=function(id){
   opM('Add Research Note',`
@@ -2688,20 +3340,58 @@ window.tgtLogM=function(id){
     <div class="fr r2"><div><label>Date</label><input type="date" id="tl-d" value="${today}"></div><div><label>Link (optional)</label><input id="tl-u" placeholder="Google Drive, photo URL"></div></div>
   `,`<button class="btn gh" onclick="clM()">Cancel</button><button class="btn" onclick="saveTgtLog('${id}')">Save</button>`);
 };
-window.saveTgtLog=function(id){const t=ftgt(id);if(!t.researchLog)t.researchLog=[];t.researchLog.push({date:$('#tl-d').value,note:$('#tl-n').value,url:$('#tl-u').value||''});save();clM();vTgt(id);toast('Note added')};
+window.saveTgtLog=async function(id){
+  const t=ftgt(id);
+  const log={date:$('#tl-d').value,note:$('#tl-n').value,url:$('#tl-u').value||''};
+  const noteWithUrl=log.url?log.note+' [Link: '+log.url+']':log.note;
+  try{
+    await sbSaveTargetLog(id,{...log,note:noteWithUrl});
+    if(!t.researchLog)t.researchLog=[];
+    t.researchLog.push(log);
+    save();clM();vTgt(id);toast('Note added');
+  }catch(err){
+    console.error('saveTgtLog failed:',err);
+    alert('Failed to save note: '+err.message);
+  }
+};
 
 // ═══ CONVERT TARGET TO DEAL ═══
-window.convertTgt=function(id){
+window.convertTgt=async function(id){
   const t=ftgt(id);if(!t)return;
   if(!confirm('Convert "'+t.co+'" to a deal in Pipeline?'))return;
-  const deal={id:'D-'+String(D.deals.length+1).padStart(3,'0'),co:t.co,contact:t.routeIn?.name||'',contactTitle:'',contactPhone:'',contactEmail:'',stage:D.stages[0],arr:0,confidence:'low',src:t.source||'Other',product:t.product||D.products[0],isPartnerDeal:false,partner:'',stageEnteredDate:today,notes:'[from-target] '+t.angle+'\n\nResearch: '+(t.researchLog||[]).map(l=>l.date+': '+l.note).join('\n'),created:today,nextAction:'',dealContext:t.useCase||'',competitive:'',winTheme:t.angle||'',stakeholders:[],buyerProcess:[],activities:[{date:today,type:'Note',note:'Converted from Target. Research log and angle carried over.'}],references:[],revenueType:'own_product',yourMargin:0,partnerBasePrice:0,referralPartner:'',referralFee:0};
-  D.deals.push(deal);
-  // auto-create follow-up task
-  D.tasks.push({id:'TK-'+Date.now(),title:'Send discovery questionnaire to '+t.co,deal:deal.id,targetId:'',due:new Date(Date.now()+3*86400000).toISOString().slice(0,10),priority:'high',status:'not_started'});
-  // remove target tasks
-  D.tasks=D.tasks.filter(x=>x.targetId!==id);
-  D.prospectTargets=D.prospectTargets.filter(x=>x.id!==id);
-  save();sw('pipe');toast('Converted to deal: '+t.co);
+  const deal={
+    id:null,co:t.co,contact:t.routeIn?.name||'',contactTitle:'',contactPhone:'',contactEmail:'',
+    stage:D.stages[0],arr:0,confidence:'low',src:t.source||'Other',product:t.product||D.products[0],
+    isPartnerDeal:false,partner:'',stageEnteredDate:today,
+    notes:'[from-target] '+t.angle+'\n\nResearch: '+(t.researchLog||[]).map(l=>l.date+': '+l.note).join('\n'),
+    created:today,nextAction:'',dealContext:t.useCase||'',competitive:'',winTheme:t.angle||'',
+    stakeholders:[],buyerProcess:[],activities:[],references:[],
+    revenueType:'own_product',yourMargin:0,partnerBasePrice:0,referralPartner:'',referralFee:0
+  };
+  try{
+    await sbSaveDeal(deal);
+    await sbSaveActivity(deal.id,{date:today,type:'Note',note:'Converted from Target. Research log and angle carried over.'});
+    deal.activities.push({date:today,type:'Note',note:'Converted from Target. Research log and angle carried over.'});
+    D.deals.push(deal);
+
+    // Move the "next step" task to point at the new deal instead of the target
+    let tk=D.tasks.find(x=>x.targetId===id);
+    if(tk){
+      tk.deal=deal.id;tk.targetId=null;
+      await sbSaveTask(tk);
+    } else {
+      const newTask={id:null,title:'Send discovery questionnaire to '+t.co,deal:deal.id,targetId:null,due:new Date(Date.now()+3*86400000).toISOString().slice(0,10),priority:'high',status:'not_started',extensions:[]};
+      await sbSaveTask(newTask);
+      D.tasks.push(newTask);
+    }
+
+    await sbDeleteTarget(id);
+    D.prospectTargets=D.prospectTargets.filter(x=>x.id!==id);
+    save();sw('pipe');toast('Converted to deal: '+t.co);
+  }catch(err){
+    console.error('convertTgt failed:',err);
+    alert('Conversion failed: '+err.message+'\n\nPlease check Pipeline and Targets for duplicates before retrying.');
+  }
 };
 
 // ═══ TARGET AI — PER TARGET ═══
@@ -2746,15 +3436,23 @@ RESPONSE FORMAT REQUIREMENTS:
     const j=await r.json();
     const text=j.candidates?.[0]?.content?.parts?.map(p=>p.text||'').join('\n')||'No response';
     t.aiCache={text,date:today};save();
+    sbSaveAiCache('tgt-'+id,text).catch(e=>console.warn('Target AI cache sync:',e));
     if(el)el.innerHTML=`<div style="font-size:12px;color:var(--ink2);margin-bottom:4px">${new Date().toLocaleDateString('en-GB')}</div><div style="font-size:13px;line-height:1.7;">${renderMD(text)}</div><div style="margin-top:8px;display:flex;gap:6px"><button class="btn sm gh" onclick="saveTgtInsight('${id}')">Archive</button><button class="btn sm gh" onclick="ftgt('${id}').aiCache={};save();vTgt('${id}')">Clear</button></div>`;
   }catch(e){if(el)el.innerHTML='<div style="color:var(--red);font-size:12px">Error: '+e.message+'</div>'}
 };
 
-window.saveTgtInsight=function(id){
+window.saveTgtInsight=async function(id){
   const t=ftgt(id);if(!t||!t.aiCache?.text)return;
-  if(!t.aiArchive)t.aiArchive=[];
-  t.aiArchive.unshift({text:t.aiCache.text,date:t.aiCache.date||today});
-  t.aiCache={};save();vTgt(id);toast('Archived');
+  const entry={text:t.aiCache.text,date:t.aiCache.date||today};
+  try{
+    await sbSaveTargetAiArchive(id,entry);
+    if(!t.aiArchive)t.aiArchive=[];
+    t.aiArchive.unshift(entry);
+    t.aiCache={};save();vTgt(id);toast('Archived');
+  }catch(err){
+    console.error('saveTgtInsight failed:',err);
+    alert('Failed to archive: '+err.message);
+  }
 };
 
 // ═══ TARGET AI — PORTFOLIO ANALYSIS ═══
