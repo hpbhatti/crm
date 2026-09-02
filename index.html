@@ -234,49 +234,68 @@ const sb=window.supabase.createClient(SB_URL,SB_KEY,{
 // and the flat Supabase tables. All existing views continue to work unchanged.
 
 async function sbLoad(){
+  const _t0=performance.now();
   try{
-    // Load settings — use limit(1) + maybeSingle to avoid errors
+    // Load settings first (needed to check if DB is initialized)
     let {data:settings,error:se}=await sb.from('settings').select('*').limit(1).maybeSingle();
     if(se){console.error('Settings error:',se.message);throw se}
     if(!settings){
-      // No settings row yet — insert default
       const {data:ns}=await sb.from('settings').insert({}).select().single();
       settings=ns;
     }
 
-    // Load partners
-    const {data:productPartners}=await sb.from('product_partners').select('*').eq('is_active',true);
-    const {data:referralPartners}=await sb.from('referral_partners').select('*').eq('is_active',true);
-
-    // Load product profiles
-    const {data:profiles}=await sb.from('product_profiles').select('*');
-
-    // Load deals with related data
-    const {data:deals}=await sb.from('deals').select('*');
-    const {data:stakeholders}=await sb.from('stakeholders').select('*');
-    const {data:activities}=await sb.from('activities').select('*').order('activity_date',{ascending:false});
-    const {data:buyerSteps}=await sb.from('buyer_process_steps').select('*').order('sort_order');
-    const {data:references}=await sb.from('deal_references').select('*');
-    const {data:insights}=await sb.from('saved_insights').select('*');
-    const {data:objections}=await sb.from('objections').select('*');
-    const {data:exitChecks}=await sb.from('deal_exit_checks').select('*');
-
-    // Load tasks
-    const {data:tasks}=await sb.from('tasks').select('*');
-    const {data:extensions}=await sb.from('task_extensions').select('*');
-
-    // Load other tables
-    const {data:lostDeals}=await sb.from('lost_deals').select('*');
-    const {data:targets}=await sb.from('prospect_targets').select('*');
-    const {data:targetLogs}=await sb.from('target_research_logs').select('*');
-    const {data:aiCache}=await sb.from('ai_cache').select('*');
-    const {data:warArchive}=await sb.from('war_archive').select('*');
-    const {data:targetAiArchive}=await sb.from('target_ai_archive').select('*');
-    const {data:reportComments}=await sb.from('report_comments').select('*');
-    const {data:weeklyMetrics}=await sb.from('weekly_metrics').select('*');
-    const {data:exitCriteria}=await sb.from('stage_exit_criteria').select('*').eq('is_active',true).order('sort_order');
-    const {data:reviewNotes}=await sb.from('review_notes').select('*').order('review_date',{ascending:false});
-    const {data:principles}=await sb.from('sales_principles').select('*').eq('is_active',true);
+    // Fire ALL remaining queries simultaneously instead of one-by-one
+    const [
+      {data:productPartners},
+      {data:referralPartners},
+      {data:profiles},
+      {data:deals},
+      {data:stakeholders},
+      {data:activities},
+      {data:buyerSteps},
+      {data:references},
+      {data:insights},
+      {data:objections},
+      {data:exitChecks},
+      {data:tasks},
+      {data:extensions},
+      {data:lostDeals},
+      {data:targets},
+      {data:targetLogs},
+      {data:aiCache},
+      {data:warArchive},
+      {data:targetAiArchive},
+      {data:reportComments},
+      {data:weeklyMetrics},
+      {data:exitCriteria},
+      {data:reviewNotes},
+      {data:principles}
+    ]=await Promise.all([
+      sb.from('product_partners').select('*').eq('is_active',true),
+      sb.from('referral_partners').select('*').eq('is_active',true),
+      sb.from('product_profiles').select('*'),
+      sb.from('deals').select('*'),
+      sb.from('stakeholders').select('*'),
+      sb.from('activities').select('*').order('activity_date',{ascending:false}),
+      sb.from('buyer_process_steps').select('*').order('sort_order'),
+      sb.from('deal_references').select('*'),
+      sb.from('saved_insights').select('*'),
+      sb.from('objections').select('*'),
+      sb.from('deal_exit_checks').select('*'),
+      sb.from('tasks').select('*'),
+      sb.from('task_extensions').select('*'),
+      sb.from('lost_deals').select('*'),
+      sb.from('prospect_targets').select('*'),
+      sb.from('target_research_logs').select('*'),
+      sb.from('ai_cache').select('*'),
+      sb.from('war_archive').select('*'),
+      sb.from('target_ai_archive').select('*'),
+      sb.from('report_comments').select('*'),
+      sb.from('weekly_metrics').select('*'),
+      sb.from('stage_exit_criteria').select('*').eq('is_active',true).order('sort_order'),
+      sb.from('review_notes').select('*').order('review_date',{ascending:false}),
+      sb.from('sales_principles').select('*').eq('is_active',true)
+    ]);
 
     // ── Assemble the D object ──
     // This matches the exact structure all existing rendering functions expect
@@ -438,7 +457,7 @@ async function sbLoad(){
       _settingsId:settings.id
     };
 
-    console.log('Loaded from Supabase:',D.deals.length,'deals,',D.tasks.length,'tasks,',D.prospectTargets.length,'targets');
+    console.log('Loaded from Supabase in',Math.round(performance.now()-_t0),'ms:',D.deals.length,'deals,',D.tasks.length,'tasks,',D.prospectTargets.length,'targets');
     return true;
   }catch(err){
     console.error('Supabase load failed, using defaults:',err);
@@ -714,9 +733,10 @@ if(!D.warArchive)D.warArchive=[];
     if(!d.stageEnteredDate)d.stageEnteredDate=d.created||today;
     if(d.isPartnerDeal===undefined){d.isPartnerDeal=!!(d.channel&&d.channel.includes('Partner'));d.partner=d.isPartnerDeal?(d.channel.replace('Partner: ','')):''}
     if(!d.revenueType)d.revenueType=d.isPartnerDeal?'partner_share':'own_product';
-    if(!d.revenueSharePct)d.revenueSharePct=d.isPartnerDeal?(D.partnerMargins[d.partner]||20):100;
+    if(d.yourMargin===undefined)d.yourMargin=d.isPartnerDeal?0:(d.arr||0);
+    if(d.partnerBasePrice===undefined)d.partnerBasePrice=0;
     if(d.referralPartner===undefined)d.referralPartner='';
-    if(d.referralPct===undefined)d.referralPct=0;
+    if(d.referralFee===undefined)d.referralFee=0;
     if(!d.activities)d.activities=[];
     if(!d.stakeholders)d.stakeholders=[];
     if(!d.buyerProcess)d.buyerProcess=[];
@@ -1304,7 +1324,7 @@ function rLost(ph){
     <tr id="ld-detail-${i}" style="display:none"><td colspan="7" style="background:#faf8f3;padding:14px">
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:12px;margin-bottom:8px">
         <div><strong>Stage at loss:</strong> ${d.lostAtStage||d.stage}</div>
-        <div><strong>Deal value:</strong> ${fc(d.arr)} (your share: ${fc(expRev(d))})</div>
+        <div><strong>Deal value:</strong> ${fc(d.arr)} (your revenue: ${fc(expRev(d))})</div>
         <div><strong>Days active:</strong> ${d.created?dd(d.created,d.lostDate||today)+'d':'—'}</div>
         <div><strong>Stakeholders:</strong> ${(d.stakeholders||[]).length}</div>
       </div>
@@ -2105,11 +2125,12 @@ function rCfg(ph){
     <div class="fr r3"><div><label>Pipeline from stage</label><select id="s-pf">${D.stages.map(s=>`<option ${s===D.targets.pipelineFrom?'selected':''}>${s}</option>`).join('')}</select><div style="font-size:9px;color:var(--ink3);margin-top:2px">Deals count as pipeline from here</div></div><div><label>Forecast from stage</label><select id="s-ff">${D.stages.map(s=>`<option ${s===D.targets.forecastFrom?'selected':''}>${s}</option>`).join('')}</select><div style="font-size:9px;color:var(--ink3);margin-top:2px">Deals enter revenue forecast</div></div><div><label>Actual Revenue from stage</label><select id="s-af">${D.stages.map(s=>`<option ${s===D.targets.actualRevenueFrom?'selected':''}>${s}</option>`).join('')}</select><div style="font-size:9px;color:var(--ink3);margin-top:2px">Customer said yes — earned revenue</div></div></div>
     <button class="btn sm" onclick="D.targets.annualTarget=+$('#s-r').value;D.targets.fiscalYearStart=+$('#s-fy').value;D.targets.avgCycleDays=+$('#s-c').value;D.targets.pipelineFrom=$('#s-pf').value;D.targets.forecastFrom=$('#s-ff').value;D.targets.actualRevenueFrom=$('#s-af').value;save();rAll();toast('Saved')">Save</button></div>
 
-  <div class="cd"><h3>Product Partner Margins</h3><div class="ds">Your revenue share % from each product partner. This is what YOU earn.</div>
-    ${(D.partners||[]).map((p,i)=>`<div style="display:flex;align-items:center;gap:8px;padding:4px 0"><span style="flex:1;font-size:12px">${p}</span><input type="number" value="${D.partnerMargins[p]||20}" min="1" max="100" style="width:60px;padding:4px 6px;border:1px solid var(--lineS);border-radius:4px;font-size:12px;text-align:center" onchange="D.partnerMargins['${p}']=+this.value;save()"><span style="font-size:11px;color:var(--ink3)">% your share</span></div>`).join('')}
+  <div class="cd"><h3>Product Partners</h3><div class="ds">Companies whose products you resell. Your markup (SAR) is set per deal, not here — since it varies based on your involvement in each deal.</div>
+    ${(D.partners||[]).map((p,i)=>`<div style="display:flex;align-items:center;gap:8px;padding:4px 0"><span style="flex:1;font-size:12px">${p}</span><button onclick="D.partners.splice(${i},1);save();rv('cfg')" style="background:none;border:none;cursor:pointer;color:var(--ink3);font-size:13px">×</button></div>`).join('')}
+    <div style="display:flex;gap:4px;margin-top:6px"><input id="npp" placeholder="Product partner name" style="flex:1;padding:4px 8px;border:1px solid var(--lineS);border-radius:5px;font-size:12px"><button class="btn sm" onclick="if($('#npp').value){D.partners.push($('#npp').value);save();rv('cfg')}">Add</button></div>
   </div>
 
-  <div class="cd"><h3>Referral Partners</h3><div class="ds">People or companies that bring you leads. Commission % is calculated on the total deal value (Model A — Saudi standard).</div>
+  <div class="cd"><h3>Referral Partners</h3><div class="ds">People or companies that bring you leads. Each gets a fixed SAR fee per deal — not a percentage. Auto-fills on the deal form, overridable per deal.</div>
     <div style="margin-bottom:8px">${Object.entries(D.referralPartners||{}).filter(e=>e[0]).map(([name,fee])=>`<div style="display:flex;align-items:center;gap:8px;padding:4px 0"><span style="flex:1;font-size:12px">${name}</span><input type="number" value="${fee}" min="0" style="width:80px;padding:4px 6px;border:1px solid var(--lineS);border-radius:4px;font-size:12px;text-align:center" onchange="D.referralPartners['${name}']=+this.value;save()"><span style="font-size:11px;color:var(--ink3)">SAR fee</span><button onclick="delete D.referralPartners['${name}'];save();rv('cfg')" style="background:none;border:none;cursor:pointer;color:var(--ink3);font-size:13px">×</button></div>`).join('')}</div>
     <div style="display:flex;gap:4px"><input id="nrp" placeholder="Referral partner name" style="flex:1;padding:4px 8px;border:1px solid var(--lineS);border-radius:5px;font-size:12px"><input id="nrpp" type="number" placeholder="SAR fee" value="5000" min="0" style="width:80px;padding:4px 8px;border:1px solid var(--lineS);border-radius:5px;font-size:12px"><button class="btn sm" onclick="if($('#nrp').value){D.referralPartners[$('#nrp').value]=+$('#nrpp').value||5000;save();rv('cfg')}">Add</button></div>
   </div>
@@ -2174,7 +2195,7 @@ window.dealM=function(id){
       <div style="font-size:10px;color:var(--ink3);margin-bottom:8px">Deal Value = Partner Base + Your Markup. Your Markup is your gross revenue from this deal.</div>
     </div>
     <div class="fr r2"><div><label>Product</label><select id="f-pr">${D.products.map(p=>`<option ${p===l.product?'selected':''}>${p}</option>`).join('')}</select></div><div><label>Source</label><select id="f-src">${(D.sources||['Inbound','Personal Referral','Partner Referral','Conference','Cold Outbound','Other']).map(s=>`<option ${s===l.src?'selected':''}>${s}</option>`).join('')}</select></div></div>
-    <div class="fr r2"><div><label>Partner Deal?</label><select id="f-ip" onchange="document.getElementById('f-pn-wrap').style.display=this.value==='yes'?'block':'none'"><option value="no" ${!l.isPartnerDeal?'selected':''}>No</option><option value="yes" ${l.isPartnerDeal?'selected':''}>Yes</option></select></div><div id="f-pn-wrap" style="display:${l.isPartnerDeal?'block':'none'}"><label>Product Partner</label><select id="f-pn" onchange="var m=D.partnerMargins[this.value];if(m)document.getElementById('f-rspv').value=m">${(D.partners||[]).map(p=>`<option ${p===l.partner?'selected':''}>${p}</option>`).join('')}</select></div></div>
+    <div class="fr r2"><div><label>Partner Deal?</label><select id="f-ip" onchange="document.getElementById('f-pn-wrap').style.display=this.value==='yes'?'block':'none'"><option value="no" ${!l.isPartnerDeal?'selected':''}>No</option><option value="yes" ${l.isPartnerDeal?'selected':''}>Yes</option></select></div><div id="f-pn-wrap" style="display:${l.isPartnerDeal?'block':'none'}"><label>Product Partner</label><select id="f-pn">${(D.partners||[]).map(p=>`<option ${p===l.partner?'selected':''}>${p}</option>`).join('')}</select></div></div>
     <div class="fr r2"><div><label>Referral Partner</label><select id="f-rp" onchange="var v=this.value;if(!v){document.getElementById('f-rfee').value=0}else{var fee=(D.referralPartners||{})[v];document.getElementById('f-rfee').value=fee||0}"><option value="">None</option>${Object.keys(D.referralPartners||{}).filter(k=>k).map(r=>`<option ${r===l.referralPartner?'selected':''}>${r}</option>`).join('')}</select></div><div><label>Referral Fee (SAR)</label><input type="number" id="f-rfee" value="${l.referralFee||(l.referralPartner&&D.referralPartners[l.referralPartner]?D.referralPartners[l.referralPartner]:0)}" min="0"></div></div>
     <div class="fr r2"><div><label>Next Action</label><input type="date" id="f-na" value="${l.nextAction}"></div><div><label>Created</label><input type="date" id="f-cr" value="${l.created}"></div></div>
     ${!isN?`<div style="font-size:11px;color:var(--ink3);padding:8px 0;border-top:1px dashed var(--line)">Stage entered: ${l.stageEnteredDate||'—'} · Days in stage: ${stageDays(l)}d (auto-calculated)</div>`:''}
@@ -2314,7 +2335,7 @@ function rRev(ph){
   var wfRows=[
     {label:'Total Deal Value',value:totalDealValue,color:'var(--accent)',sub:'Sum of all deal values'},
     {label:'Partner Portions',value:totalPartnerPortion,color:'var(--ink3)',sub:'Revenue retained by product partners',neg:true},
-    {label:'Your Gross Revenue',value:totalGrossRev,color:'var(--warm)',sub:'Deal value × your share %'},
+    {label:'Your Gross Revenue',value:totalGrossRev,color:'var(--warm)',sub:'Own product value or your markup'},
     {label:'Referral Commissions',value:totalRefComm,color:'var(--amber)',sub:'% of deal value, paid to referrers',neg:true},
     {label:'Your Net Revenue',value:totalNetRev,color:'var(--green)',sub:'What SOE actually keeps'}
   ];
@@ -2356,9 +2377,9 @@ function rRev(ph){
       h2+='<td style="font-size:11px;font-weight:500">'+d.product+'</td>';
       h2+='<td style="font-family:monospace;font-size:12px">'+fc(d.arr)+'</td>';
       h2+='<td style="font-size:10px">'+typeLabel+'</td>';
-      h2+='<td style="font-size:11px;text-align:center">'+d.revenueSharePct+'%</td>';
+      h2+='<td style="font-size:11px;text-align:center">'+(d.revenueType==='partner_share'?fc(d.yourMargin)+' markup':'100% own')+'</td>';
       h2+='<td style="font-family:monospace;font-size:12px">'+fc(gr)+'</td>';
-      h2+='<td style="font-size:11px;text-align:center;color:'+(d.referralPct?'var(--amber)':'var(--ink3)')+'">'+(d.referralPct?d.referralPct+'%':'—')+(d.referralPartner?'<div style="font-size:8px">'+d.referralPartner+'</div>':'')+'</td>';
+      h2+='<td style="font-size:11px;text-align:center;color:'+(d.referralFee?'var(--amber)':'var(--ink3)')+'">'+(d.referralFee?fc(d.referralFee):'—')+(d.referralPartner?'<div style="font-size:8px">'+d.referralPartner+'</div>':'')+'</td>';
       h2+='<td style="font-family:monospace;font-size:12px;color:'+(rc>0?'var(--amber)':'var(--ink3)')+'">'+fc(rc)+'</td>';
       h2+='<td style="font-family:monospace;font-size:12px;font-weight:600;color:'+titleColor+'">'+fc(nr)+'</td>';
       h2+='</tr>';
@@ -2445,7 +2466,7 @@ window.genPartnerReport=function(dealId,type){
     '<div class="header"><h1>Referral Partner Report</h1><div style="font-size:12px;color:#666">'+d.co+'</div></div>'+
     '<div class="partner-banner"><div><div style="font-size:10px;opacity:.6">REFERRAL PARTNER</div><h3>'+(d.referralPartner||'Referral Partner')+'</h3></div><span style="font-size:11px;opacity:.7">Report Date: '+new Date().toLocaleDateString('en-GB',{day:'numeric',month:'long',year:'numeric'})+'</span></div>'+
     '<div style="background:#faf8f3;border:1px solid #e4e0d6;border-radius:6px;padding:12px 16px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center"><div style="font-size:10px;color:#666;text-transform:uppercase;letter-spacing:.06em;font-weight:600">Product</div><div style="font-family:Fraunces,serif;font-size:18px;font-weight:700;color:#1a3a52">'+(d.product||'—')+'</div></div>'+
-    '<div class="grid"><div class="card"><div class="l">Deal Value</div><div class="v">'+fc(d.arr)+'</div></div><div class="card"><div class="l">Your Commission Rate</div><div class="v" style="color:#c9a96e">'+d.referralPct+'%</div></div><div class="card"><div class="l">Your Commission Amount</div><div class="v" style="color:#c9a96e">'+fc(comm)+'</div></div></div><div class="grid" style="grid-template-columns:1fr"><div class="card"><div class="l">Current Stage</div><div class="v" style="font-size:16px">'+d.stage+'</div></div></div>'+
+    '<div class="grid"><div class="card"><div class="l">Deal Value</div><div class="v">'+fc(d.arr)+'</div></div><div class="card"><div class="l">Your Referral Fee</div><div class="v" style="color:#c9a96e">'+fc(comm)+'</div></div><div class="card"><div class="l">Current Stage</div><div class="v" style="font-size:16px">'+d.stage+'</div></div></div>'+
     '<div style="display:flex;gap:2px;margin-bottom:16px">'+stageBar+'</div>'+
     '<h2>Deal Context</h2><p style="padding:14px 18px;background:#faf8f3;border-left:3px solid #c9a96e;border-radius:4px;font-size:13px;line-height:1.7">'+(d.dealContext||'No context provided.')+'</p>'+
     '<h2>Activity Timeline</h2>'+
@@ -2673,7 +2694,7 @@ window.saveTgtLog=function(id){const t=ftgt(id);if(!t.researchLog)t.researchLog=
 window.convertTgt=function(id){
   const t=ftgt(id);if(!t)return;
   if(!confirm('Convert "'+t.co+'" to a deal in Pipeline?'))return;
-  const deal={id:'D-'+String(D.deals.length+1).padStart(3,'0'),co:t.co,contact:t.routeIn?.name||'',contactTitle:'',contactPhone:'',contactEmail:'',stage:D.stages[0],arr:0,confidence:'low',src:t.source||'Other',product:t.product||D.products[0],isPartnerDeal:false,partner:'',stageEnteredDate:today,notes:'[from-target] '+t.angle+'\n\nResearch: '+(t.researchLog||[]).map(l=>l.date+': '+l.note).join('\n'),created:today,nextAction:'',dealContext:t.useCase||'',competitive:'',winTheme:t.angle||'',stakeholders:[],buyerProcess:[],activities:[{date:today,type:'Note',note:'Converted from Target. Research log and angle carried over.'}],references:[],revenueType:'own_product',revenueSharePct:100,referralPartner:'',referralPct:0};
+  const deal={id:'D-'+String(D.deals.length+1).padStart(3,'0'),co:t.co,contact:t.routeIn?.name||'',contactTitle:'',contactPhone:'',contactEmail:'',stage:D.stages[0],arr:0,confidence:'low',src:t.source||'Other',product:t.product||D.products[0],isPartnerDeal:false,partner:'',stageEnteredDate:today,notes:'[from-target] '+t.angle+'\n\nResearch: '+(t.researchLog||[]).map(l=>l.date+': '+l.note).join('\n'),created:today,nextAction:'',dealContext:t.useCase||'',competitive:'',winTheme:t.angle||'',stakeholders:[],buyerProcess:[],activities:[{date:today,type:'Note',note:'Converted from Target. Research log and angle carried over.'}],references:[],revenueType:'own_product',yourMargin:0,partnerBasePrice:0,referralPartner:'',referralFee:0};
   D.deals.push(deal);
   // auto-create follow-up task
   D.tasks.push({id:'TK-'+Date.now(),title:'Send discovery questionnaire to '+t.co,deal:deal.id,targetId:'',due:new Date(Date.now()+3*86400000).toISOString().slice(0,10),priority:'high',status:'not_started'});
