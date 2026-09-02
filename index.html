@@ -728,19 +728,25 @@ if(!D.warArchive)D.warArchive=[];
 // Initialize from Supabase
 async function initApp(){
   const mc=document.getElementById('mc');
-  if(!mc){setTimeout(initApp,100);return;}
-  mc.innerHTML='<div style="padding:60px 40px;text-align:center"><div style="width:40px;height:40px;border:3px solid var(--gold);border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 16px"></div><div style="font-size:14px;color:var(--ink2);font-weight:500">Connecting to RevOps database...</div><div style="font-size:11px;color:var(--ink3);margin-top:6px">First load may take a few seconds</div></div>';
+  if(!mc){setTimeout(initApp,200);return;}
+
+  // Store original panel HTML, show loader
+  const originalHTML=mc.innerHTML;
+  mc.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:80vh;flex-direction:column;gap:16px"><div style="width:44px;height:44px;border:3px solid var(--gold);border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite"></div><div style="font-size:14px;color:var(--ink2);font-weight:500">Connecting to cloud database...</div><div style="font-size:11px;color:var(--ink3)">hpbhatti.github.io/crm — powered by Supabase</div></div>';
+
   try{
     const ok=await sbLoad();
+    // Restore panel structure before rendering
+    mc.innerHTML=originalHTML;
     if(ok){
-      console.log('Supabase loaded successfully');
+      console.log('Supabase loaded:',D.deals.length,'deals');
       rAll();
     } else {
-      mc.innerHTML='<div style="padding:40px;text-align:center;color:var(--red)"><div style="font-size:24px;margin-bottom:12px">⚠</div><div style="font-size:14px;font-weight:600">Connection failed</div><div style="font-size:12px;color:var(--ink2);margin-top:8px">Check your internet connection and reload.</div><button class="btn" style="margin-top:16px" onclick="initApp()">Retry</button></div>';
+      mc.innerHTML='<div style="padding:60px;text-align:center"><div style="font-size:32px;margin-bottom:12px">⚠</div><div style="font-size:15px;color:var(--red);font-weight:600;margin-bottom:8px">Could not connect to database</div><div style="font-size:12px;color:var(--ink2);margin-bottom:20px">Check your internet connection and try again.</div><button class="btn" onclick="location.reload()">Reload Page</button></div>';
     }
   }catch(err){
     console.error('initApp error:',err);
-    mc.innerHTML='<div style="padding:40px;text-align:center"><div style="font-size:24px;margin-bottom:12px">⚠</div><div style="font-size:14px;color:var(--red);font-weight:600">'+err.message+'</div><button class="btn" style="margin-top:16px" onclick="initApp()">Retry</button></div>';
+    mc.innerHTML='<div style="padding:60px;text-align:center"><div style="font-size:32px;margin-bottom:12px">⚠</div><div style="font-size:15px;color:var(--red);font-weight:600;margin-bottom:8px">'+err.message+'</div><button class="btn" style="margin-top:16px" onclick="location.reload()">Reload Page</button></div>';
   }
 }
 
