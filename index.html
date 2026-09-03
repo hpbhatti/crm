@@ -2367,10 +2367,10 @@ function rCfg(ph){
     <div id="stg-list">${D.stages.map((s,i)=>`<div style="display:flex;align-items:center;gap:6px;padding:5px 8px;background:#faf8f3;border:1px solid var(--line);border-radius:5px;margin-bottom:3px"><span style="color:var(--ink3);cursor:grab">⠿</span><input value="${s}" style="flex:1;padding:4px 8px;border:1px solid var(--line);border-radius:4px;font-size:12px" data-si="${i}">${i===D.stages.length-1?'<span style="font-size:9px;font-weight:600;padding:2px 6px;border-radius:3px;background:var(--gbg);color:var(--green)">won</span>':''}<button class="rb" style="padding:2px 6px" onclick="D.stages.splice(${i},1);save();rv('cfg')">×</button></div>`).join('')}</div>
     <div style="display:flex;gap:6px;margin-top:6px"><input id="ns" placeholder="New stage" style="flex:1;padding:5px 8px;border:1px solid var(--lineS);border-radius:5px;font-size:12px"><button class="btn sm" onclick="if($('#ns').value){D.stages.splice(D.stages.length-1,0,$('#ns').value);save();rv('cfg')}">Add</button></div>
     <button class="btn sm" style="margin-top:6px" onclick="document.querySelectorAll('#stg-list input[data-si]').forEach(i=>{D.stages[+i.dataset.si]=i.value});save();rv('cfg');toast('Saved')">Save Names</button></div>
-  <div class="cd"><h3>Products</h3><div class="ds">Rename cascades to every deal and product profile using this name.</div>
-    <div id="prod-list" style="display:flex;flex-direction:column;gap:4px;margin-bottom:6px">${D.products.map((p,i)=>`<div style="display:flex;align-items:center;gap:6px"><input value="${p}" style="flex:1;padding:4px 8px;border:1px solid var(--line);border-radius:4px;font-size:12px" data-pi="${i}"><button onclick="delProduct(${i})" style="background:none;border:none;cursor:pointer;color:var(--ink3);font-size:13px">×</button></div>`).join('')}</div>
-    <div style="display:flex;gap:4px;margin-bottom:6px"><input id="np" placeholder="New product" style="flex:1;padding:4px 8px;border:1px solid var(--lineS);border-radius:5px;font-size:12px"><button class="btn sm" onclick="addProduct()">Add</button></div>
-    <button class="btn sm" onclick="saveProductRenames()">Save Names</button></div>
+  <div class="cd" style="border-left:3px solid var(--warm)"><h3>✎ Rename Products</h3><div class="ds">Type a new name directly in the box below, then click Save Names. This updates every deal and product profile using the old name — nothing is lost.</div>
+    <div id="prod-list" style="display:flex;flex-direction:column;gap:4px;margin-bottom:6px">${D.products.map((p,i)=>`<div style="display:flex;align-items:center;gap:6px"><input value="${p}" style="flex:1;padding:6px 10px;border:1.5px solid var(--warm);border-radius:4px;font-size:12px;background:#faf5eb" data-pi="${i}"><button onclick="delProduct(${i})" style="background:none;border:none;cursor:pointer;color:var(--ink3);font-size:13px">×</button></div>`).join('')}</div>
+    <div style="display:flex;gap:4px;margin-bottom:6px"><input id="np" placeholder="New product" style="flex:1;padding:4px 8px;border:1px solid var(--lineS);border-radius:5px;font-size:12px"><button class="btn sm" onclick="addProduct()">Add New</button></div>
+    <button class="btn" onclick="saveProductRenames()">💾 Save Names</button></div>
   <div class="cd"><h3>Lead Sources</h3><div class="ds">How leads reach you. Configurable.</div><div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px">${(D.sources||[]).map((s,i)=>`<span style="display:inline-flex;align-items:center;gap:3px;padding:4px 8px;background:#faf8f3;border-radius:5px;font-size:11px;border:1px solid var(--line)">${s}<button onclick="D.sources.splice(${i},1);save();rv('cfg')" style="background:none;border:none;cursor:pointer;color:var(--ink3);font-size:13px">×</button></span>`).join('')}</div>
     <div style="display:flex;gap:4px"><input id="ns2" placeholder="New source" style="flex:1;padding:4px 8px;border:1px solid var(--lineS);border-radius:5px;font-size:12px"><button class="btn sm" onclick="if($('#ns2').value){D.sources.push($('#ns2').value);save();rv('cfg')}">Add</button></div></div>
   </div>
@@ -2949,6 +2949,7 @@ window.impD=function(){
       try{importData=JSON.parse(ev.target.result)}catch{alert('Invalid JSON file');return}
 
       const mc=document.getElementById('mc');
+      const originalHTML=mc.innerHTML;
       mc.innerHTML='<div style="padding:60px;text-align:center"><div style="width:40px;height:40px;border:3px solid var(--gold);border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 16px"></div><div style="font-size:14px;color:var(--ink2)">Importing sample data to Supabase...</div><div id="imp-progress" style="font-size:11px;color:var(--ink3);margin-top:8px">Starting...</div></div>';
       const prog=(msg)=>{const el=document.getElementById('imp-progress');if(el)el.textContent=msg};
 
@@ -3045,12 +3046,15 @@ window.impD=function(){
 
         prog('Reloading...');
         await sbLoad();
+        mc.innerHTML=originalHTML;
         rAll();
         toast('Sample data imported successfully');
       }catch(err){
         console.error('Import error:',err);
+        await sbLoad();
+        mc.innerHTML=originalHTML;
+        rAll();
         alert('Import failed: '+err.message);
-        await sbLoad();rAll();
       }
     };
     r.readAsText(f);
@@ -3061,6 +3065,7 @@ window.impD=function(){
 window.rstD=async function(){
   if(!confirm('This will DELETE ALL your deals, tasks, targets, and related data from Supabase. This cannot be undone. Continue?'))return;
   const mc=document.getElementById('mc');
+  const originalHTML=mc.innerHTML;
   mc.innerHTML='<div style="padding:60px;text-align:center"><div style="font-size:14px;color:var(--ink2)">Clearing database...</div></div>';
   try{
     // Delete in order respecting foreign keys
@@ -3082,10 +3087,15 @@ window.rstD=async function(){
     await sb.from('ai_cache').delete().neq('id','00000000-0000-0000-0000-000000000000');
     await sb.from('war_archive').delete().neq('id','00000000-0000-0000-0000-000000000000');
     await sb.from('report_comments').delete().neq('id','00000000-0000-0000-0000-000000000000');
-    await sbLoad();rAll();
+    await sbLoad();
+    mc.innerHTML=originalHTML;
+    rAll();
     toast('All data cleared. Ready for real deals.');
   }catch(err){
     console.error('Reset error:',err);
+    await sbLoad();
+    mc.innerHTML=originalHTML;
+    rAll();
     alert('Reset failed: '+err.message);
   }
 };
