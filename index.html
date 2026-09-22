@@ -223,6 +223,14 @@ const DISP=['Supporter','Neutral','Blocker'],ROLES=['Champion','Decision Maker',
 const CONF_W={high:1,medium:0.6,low:0.3};
 
 // ═══ SUPABASE CONNECTION ═══
+// Auto-correct retired/invalid Gemini model names so old saved settings never hard-break AI calls
+const VALID_GEMINI_MODELS=['gemini-2.5-flash','gemini-3.1-flash-lite','gemini-3.1-pro-preview'];
+function fixModelName(m){
+  if(m&&VALID_GEMINI_MODELS.includes(m))return m;
+  if(m==='gemini-2.5-pro')return 'gemini-3.1-pro-preview'; // Google's own suggested replacement
+  return 'gemini-2.5-flash'; // safe default
+}
+
 const SB_URL='https://nxhajvlbhyssejofureu.supabase.co';
 const SB_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im54aGFqdmxiaHlzc2Vqb2Z1cmV1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgzMzAyMzEsImV4cCI6MjEwMzkwNjIzMX0.02wZhqetcxqEtHuw4jsETsgZI3e_FXHEYDCN8Rx3FXo';
 const sb=window.supabase.createClient(SB_URL,SB_KEY,{
@@ -449,7 +457,7 @@ async function sbLoad(){
       lostDeals:lostDeals||[],
       prospectTargets:assembledTargets,
       warArchive:(warArchive||[]).map(a=>({_id:a.id,text:a.analysis_text,date:a.analysis_date})),
-      aiConfig:{apiKey:settings.ai_api_key||'',model:settings.ai_model||'gemini-2.5-flash',prompt:settings.ai_custom_prompt||DEF.aiConfig.prompt},
+      aiConfig:{apiKey:settings.ai_api_key||'',model:fixModelName(settings.ai_model),prompt:settings.ai_custom_prompt||DEF.aiConfig.prompt},
       aiCache:cacheMap,
       reportComments:rcMap,
       weekly:(weeklyMetrics||[]).map(w=>({w:w.week_label,leads:w.leads_count,qualified:w.qualified_count,closed:w.closed_count,revenue:w.revenue})),
@@ -1141,7 +1149,7 @@ window.callGemini=async function(dealId){
     for(const p of parts){if(p.text) text+=p.text}
     if(!text) text='No response received. Try refreshing or switching to a different model in Settings.';
     // Detect truncation
-    if(candidate?.finishReason==='MAX_TOKENS') text+='\n\n⚠ **Response was truncated.** Go to Settings → AI Intelligence and try switching to gemini-2.5-pro for longer responses.';
+    if(candidate?.finishReason==='MAX_TOKENS') text+='\n\n⚠ **Response was truncated.** Go to Settings → AI Intelligence and try switching to gemini-3.1-pro-preview for longer responses.';
     D.aiCache[dealId]={text,date:today};save();
     sbSaveAiCache(dealId,text).catch(e=>console.warn('AI cache sync:',e));
     renderAI(dealId,text);
@@ -2391,7 +2399,7 @@ function rCfg(ph){
   </div>
 
   <div class="cd" style="border-left:3px solid var(--gold)"><h3>✦ AI Intelligence (Gemini)</h3><div class="ds">Connect your Google Gemini API to get real-time Saudi market intelligence on each deal. Your API key stays in your browser — it is sent directly to Google, never to any other server.</div>
-    <div class="fr r2"><div><label>API Key</label><input id="ai-key" type="password" value="${D.aiConfig.apiKey||''}" placeholder="AIzaSy..."></div><div><label>Model</label><select id="ai-model"><option ${D.aiConfig.model==='gemini-2.5-flash'?'selected':''}>gemini-2.5-flash</option><option ${D.aiConfig.model==='gemini-3.1-flash-lite'?'selected':''}>gemini-3.1-flash-lite</option><option ${D.aiConfig.model==='gemini-2.5-pro'?'selected':''}>gemini-2.5-pro</option><option ${D.aiConfig.model==='gemini-3.1-pro-preview'?'selected':''}>gemini-3.1-pro-preview</option></select></div></div>
+    <div class="fr r2"><div><label>API Key</label><input id="ai-key" type="password" value="${D.aiConfig.apiKey||''}" placeholder="AIzaSy..."></div><div><label>Model</label><select id="ai-model"><option ${D.aiConfig.model==='gemini-2.5-flash'?'selected':''}>gemini-2.5-flash</option><option ${D.aiConfig.model==='gemini-3.1-flash-lite'?'selected':''}>gemini-3.1-flash-lite</option><option ${D.aiConfig.model==='gemini-3.1-pro-preview'?'selected':''}>gemini-3.1-pro-preview</option></select><div style="font-size:9px;color:var(--ink3);margin-top:2px">gemini-2.5-flash is fastest and cheapest — good default. Use pro-preview for deeper strategic analysis (slower, costs more).</div></div></div>
     <div class="fr"><label>Custom Prompt Template</label><div class="ds" style="margin-bottom:4px">Available variables: {{company}}, {{contact}}, {{contactTitle}}, {{product}}, {{productContext}}, {{stage}}, {{dealContext}}, {{competitive}}, {{winTheme}}, {{arr}}, {{daysSinceTouch}}, {{stakeholders}}, {{buyerProcess}}, {{notes}}, {{lastActivities}}</div><textarea id="ai-prompt" style="min-height:200px;font-size:12px;font-family:monospace;line-height:1.5">${(D.aiConfig.prompt||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea></div>
     <div style="display:flex;gap:6px"><button class="btn" onclick="D.aiConfig.apiKey=$('#ai-key').value;D.aiConfig.model=$('#ai-model').value;D.aiConfig.prompt=$('#ai-prompt').value;save();rAll();toast('AI config saved')">Save AI Settings</button><button class="btn gh" onclick="D.aiCache={};save();toast('AI cache cleared')">Clear Cache</button></div>
     ${D.aiConfig.apiKey?'<div style="margin-top:8px;font-size:11px;color:var(--green)">✓ API key configured. AI Insight buttons are active across Nurture and Deal views.</div>':'<div style="margin-top:8px;font-size:11px;color:var(--amber)">No API key set. Get one at <a href="https://aistudio.google.com/apikey" target="_blank" style="color:var(--accent)">aistudio.google.com/apikey</a></div>'}
