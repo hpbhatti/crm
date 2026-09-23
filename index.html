@@ -228,7 +228,7 @@ const VALID_GEMINI_MODELS=['gemini-2.5-flash','gemini-3.1-flash-lite','gemini-3.
 function fixModelName(m){
   if(m&&VALID_GEMINI_MODELS.includes(m))return m;
   if(m==='gemini-2.5-pro')return 'gemini-3.1-pro-preview'; // Google's own suggested replacement
-  return 'gemini-2.5-flash'; // safe default
+  return 'gemini-3.1-flash-lite'; // safe default — far higher free-tier daily quota than 2.5-flash
 }
 
 const SB_URL='https://nxhajvlbhyssejofureu.supabase.co';
@@ -838,7 +838,7 @@ const DEF={
   reportComments:{},
   aiConfig:{
     apiKey:'',
-    model:'gemini-2.5-flash',
+    model:'gemini-3.1-flash-lite',
     prompt:`You are a Saudi Arabia B2B SaaS sales advisor. I need actionable intelligence to move this deal forward.
 
 DEAL CONTEXT:
@@ -872,7 +872,7 @@ const TASK_ST=['not_started','in_progress','done'];
 const TASK_ST_LABEL={'not_started':'Not Started','in_progress':'In Progress','done':'Done'};
 const TASK_ST_BD={'not_started':'nt','in_progress':'bl','done':'gn'};
 
-let D;function load(){try{D=JSON.parse(localStorage.getItem(SK));if(!D||!D.deals)throw 0;if(!D.aiConfig)D.aiConfig={apiKey:'',model:'gemini-2.5-flash',prompt:DEF.aiConfig.prompt};if(!D.aiCache)D.aiCache={};if(!D.reportComments)D.reportComments={};
+let D;function load(){try{D=JSON.parse(localStorage.getItem(SK));if(!D||!D.deals)throw 0;if(!D.aiConfig)D.aiConfig={apiKey:'',model:'gemini-3.1-flash-lite',prompt:DEF.aiConfig.prompt};if(!D.aiCache)D.aiCache={};if(!D.reportComments)D.reportComments={};
   if(!D.partners)D.partners=DEF.partners;if(!D.sources)D.sources=DEF.sources;
   if(!D.lostDeals)D.lostDeals=[];D.lostDeals.forEach(ld=>{if(!ld.aiCache)ld.aiCache={};if(!ld.aiArchive)ld.aiArchive=[]});
 
