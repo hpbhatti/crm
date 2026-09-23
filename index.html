@@ -224,11 +224,12 @@ const CONF_W={high:1,medium:0.6,low:0.3};
 
 // ═══ SUPABASE CONNECTION ═══
 // Auto-correct retired/invalid Gemini model names so old saved settings never hard-break AI calls
-const VALID_GEMINI_MODELS=['gemini-2.5-flash','gemini-3.1-flash-lite','gemini-3.1-pro-preview'];
+const VALID_GEMINI_MODELS=['gemini-2.5-flash','gemini-3.1-pro-preview'];
 function fixModelName(m){
   if(m&&VALID_GEMINI_MODELS.includes(m))return m;
   if(m==='gemini-2.5-pro')return 'gemini-3.1-pro-preview'; // Google's own suggested replacement
-  return 'gemini-3.1-flash-lite'; // safe default — far higher free-tier daily quota than 2.5-flash
+  if(m==='gemini-3.1-flash-lite')return 'gemini-2.5-flash'; // confirmed 404 on this account — not yet enabled by Google
+  return 'gemini-2.5-flash'; // safe default — confirmed working on standard API keys
 }
 
 const SB_URL='https://nxhajvlbhyssejofureu.supabase.co';
@@ -468,6 +469,13 @@ async function sbLoad(){
     };
 
     console.log('Loaded from Supabase in',Math.round(performance.now()-_t0),'ms:',D.deals.length,'deals,',D.tasks.length,'tasks,',D.prospectTargets.length,'targets');
+
+    // If the saved model was auto-corrected, write the fix back so it's permanent, not just patched in memory
+    if(settings.ai_model!==D.aiConfig.model){
+      sb.from('settings').update({ai_model:D.aiConfig.model}).eq('id',D._settingsId)
+        .then(()=>console.log('Auto-corrected saved model from',settings.ai_model,'to',D.aiConfig.model))
+        .catch(e=>console.warn('Could not persist model correction:',e));
+    }
     return true;
   }catch(err){
     console.error('Supabase load failed, using defaults:',err);
@@ -838,7 +846,7 @@ const DEF={
   reportComments:{},
   aiConfig:{
     apiKey:'',
-    model:'gemini-3.1-flash-lite',
+    model:'gemini-2.5-flash',
     prompt:`You are a Saudi Arabia B2B SaaS sales advisor. I need actionable intelligence to move this deal forward.
 
 DEAL CONTEXT:
@@ -872,7 +880,7 @@ const TASK_ST=['not_started','in_progress','done'];
 const TASK_ST_LABEL={'not_started':'Not Started','in_progress':'In Progress','done':'Done'};
 const TASK_ST_BD={'not_started':'nt','in_progress':'bl','done':'gn'};
 
-let D;function load(){try{D=JSON.parse(localStorage.getItem(SK));if(!D||!D.deals)throw 0;if(!D.aiConfig)D.aiConfig={apiKey:'',model:'gemini-3.1-flash-lite',prompt:DEF.aiConfig.prompt};if(!D.aiCache)D.aiCache={};if(!D.reportComments)D.reportComments={};
+let D;function load(){try{D=JSON.parse(localStorage.getItem(SK));if(!D||!D.deals)throw 0;if(!D.aiConfig)D.aiConfig={apiKey:'',model:'gemini-2.5-flash',prompt:DEF.aiConfig.prompt};if(!D.aiCache)D.aiCache={};if(!D.reportComments)D.reportComments={};
   if(!D.partners)D.partners=DEF.partners;if(!D.sources)D.sources=DEF.sources;
   if(!D.lostDeals)D.lostDeals=[];D.lostDeals.forEach(ld=>{if(!ld.aiCache)ld.aiCache={};if(!ld.aiArchive)ld.aiArchive=[]});
 
