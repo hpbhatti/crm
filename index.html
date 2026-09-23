@@ -224,12 +224,13 @@ const CONF_W={high:1,medium:0.6,low:0.3};
 
 // ═══ SUPABASE CONNECTION ═══
 // Auto-correct retired/invalid Gemini model names so old saved settings never hard-break AI calls
-const VALID_GEMINI_MODELS=['gemini-2.5-flash','gemini-3.1-pro-preview'];
+const VALID_GEMINI_MODELS=['gemini-3.6-flash','gemini-3.1-pro-preview'];
 function fixModelName(m){
   if(m&&VALID_GEMINI_MODELS.includes(m))return m;
   if(m==='gemini-2.5-pro')return 'gemini-3.1-pro-preview'; // Google's own suggested replacement
-  if(m==='gemini-3.1-flash-lite')return 'gemini-2.5-flash'; // confirmed 404 on this account — not yet enabled by Google
-  return 'gemini-2.5-flash'; // safe default — confirmed working on standard API keys
+  if(m==='gemini-2.5-flash')return 'gemini-3.6-flash'; // retired for new/free-tier accounts — Google's own suggested replacement
+  if(m==='gemini-3.1-flash-lite')return 'gemini-3.6-flash'; // confirmed 404 on this account — not yet enabled by Google
+  return 'gemini-3.6-flash'; // safe default — Google's current recommended model
 }
 
 const SB_URL='https://nxhajvlbhyssejofureu.supabase.co';
@@ -846,7 +847,7 @@ const DEF={
   reportComments:{},
   aiConfig:{
     apiKey:'',
-    model:'gemini-2.5-flash',
+    model:'gemini-3.6-flash',
     prompt:`You are a Saudi Arabia B2B SaaS sales advisor. I need actionable intelligence to move this deal forward.
 
 DEAL CONTEXT:
@@ -880,7 +881,7 @@ const TASK_ST=['not_started','in_progress','done'];
 const TASK_ST_LABEL={'not_started':'Not Started','in_progress':'In Progress','done':'Done'};
 const TASK_ST_BD={'not_started':'nt','in_progress':'bl','done':'gn'};
 
-let D;function load(){try{D=JSON.parse(localStorage.getItem(SK));if(!D||!D.deals)throw 0;if(!D.aiConfig)D.aiConfig={apiKey:'',model:'gemini-2.5-flash',prompt:DEF.aiConfig.prompt};if(!D.aiCache)D.aiCache={};if(!D.reportComments)D.reportComments={};
+let D;function load(){try{D=JSON.parse(localStorage.getItem(SK));if(!D||!D.deals)throw 0;if(!D.aiConfig)D.aiConfig={apiKey:'',model:'gemini-3.6-flash',prompt:DEF.aiConfig.prompt};if(!D.aiCache)D.aiCache={};if(!D.reportComments)D.reportComments={};
   if(!D.partners)D.partners=DEF.partners;if(!D.sources)D.sources=DEF.sources;
   if(!D.lostDeals)D.lostDeals=[];D.lostDeals.forEach(ld=>{if(!ld.aiCache)ld.aiCache={};if(!ld.aiArchive)ld.aiArchive=[]});
 
@@ -2407,7 +2408,7 @@ function rCfg(ph){
   </div>
 
   <div class="cd" style="border-left:3px solid var(--gold)"><h3>✦ AI Intelligence (Gemini)</h3><div class="ds">Connect your Google Gemini API to get real-time Saudi market intelligence on each deal. Your API key stays in your browser — it is sent directly to Google, never to any other server.</div>
-    <div class="fr r2"><div><label>API Key</label><input id="ai-key" type="password" value="${D.aiConfig.apiKey||''}" placeholder="AIzaSy..."></div><div><label>Model</label><select id="ai-model"><option ${D.aiConfig.model==='gemini-2.5-flash'?'selected':''}>gemini-2.5-flash</option><option ${D.aiConfig.model==='gemini-3.1-flash-lite'?'selected':''}>gemini-3.1-flash-lite</option><option ${D.aiConfig.model==='gemini-3.1-pro-preview'?'selected':''}>gemini-3.1-pro-preview</option></select><div style="font-size:9px;color:var(--ink3);margin-top:2px">gemini-2.5-flash is fastest and cheapest — good default. Use pro-preview for deeper strategic analysis (slower, costs more).</div></div></div>
+    <div class="fr r2"><div><label>API Key</label><input id="ai-key" type="password" value="${D.aiConfig.apiKey||''}" placeholder="AIzaSy..."></div><div><label>Model</label><select id="ai-model"><option ${D.aiConfig.model==='gemini-3.6-flash'?'selected':''}>gemini-3.6-flash</option><option ${D.aiConfig.model==='gemini-3.1-pro-preview'?'selected':''}>gemini-3.1-pro-preview</option></select><div style="font-size:9px;color:var(--ink3);margin-top:2px">gemini-3.6-flash is fast and cost-effective — good default. Use pro-preview for deeper strategic analysis (slower, costs more). Google retires models often — if AI Insight ever errors with "no longer available," tell Claude the exact model name Google suggests as a replacement.</div></div></div>
     <div class="fr"><label>Custom Prompt Template</label><div class="ds" style="margin-bottom:4px">Available variables: {{company}}, {{contact}}, {{contactTitle}}, {{product}}, {{productContext}}, {{stage}}, {{dealContext}}, {{competitive}}, {{winTheme}}, {{arr}}, {{daysSinceTouch}}, {{stakeholders}}, {{buyerProcess}}, {{notes}}, {{lastActivities}}</div><textarea id="ai-prompt" style="min-height:200px;font-size:12px;font-family:monospace;line-height:1.5">${(D.aiConfig.prompt||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea></div>
     <div style="display:flex;gap:6px"><button class="btn" onclick="D.aiConfig.apiKey=$('#ai-key').value;D.aiConfig.model=$('#ai-model').value;D.aiConfig.prompt=$('#ai-prompt').value;save();rAll();toast('AI config saved')">Save AI Settings</button><button class="btn gh" onclick="D.aiCache={};save();toast('AI cache cleared')">Clear Cache</button></div>
     ${D.aiConfig.apiKey?'<div style="margin-top:8px;font-size:11px;color:var(--green)">✓ API key configured. AI Insight buttons are active across Nurture and Deal views.</div>':'<div style="margin-top:8px;font-size:11px;color:var(--amber)">No API key set. Get one at <a href="https://aistudio.google.com/apikey" target="_blank" style="color:var(--accent)">aistudio.google.com/apikey</a></div>'}
